@@ -1,0 +1,1889 @@
+package links
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/kawaiiwiki/komachi/backend/internal/core/tree"
+)
+
+func pageNodeKind() *tree.NodeKind {
+	kind := tree.NodeKindPage
+	return &kind
+}
+
+func TestExtractLinksFromMarkdown_FiltersExternalAndNormalizes(t *testing.T) {
+	md := `
+# Example
+
+Internal: [Page 1](/docs/page1)
+Relative: [Rel](../docs/page2)
+Anchor only: [Section](#heading)
+External: [Google](https://google.com)
+Mail: [Mail](mailto:test@example.com)
+With fragment: [WithFragment](/docs/page3#intro)
+With query: [WithQuery](/docs/page4?foo=bar)
+With both: [Both](/docs/page5?foo=bar#section)
+`
+
+	links := extractLinksFromMarkdown(md)
+
+	want := []string{
+		"/docs/page1",
+		"../docs/page2",
+		"/docs/page3",
+		"/docs/page4",
+		"/docs/page5",
+	}
+
+	if len(links) != len(want) {
+		t.Fatalf("expected %d links, got %d: %#v", len(want), len(links), links)
+	}
+
+	for i, w := range want {
+		if links[i] != w {
+			t.Errorf("link[%d] = %q, want %q", i, links[i], w)
+		}
+	}
+}
+
+func TestExtractLinksFromMarkdown_IgnoresExternalLinksCaseInsensitive(t *testing.T) {
+	md := `
+[HTTPS](HTTPS://example.com)
+[Mail](Mailto:test@example.com)
+[Anchor](#intro)
+[Wiki](/docs/page1)
+`
+
+	links := extractLinksFromMarkdown(md)
+
+	if len(links) != 1 {
+		t.Fatalf("expected 1 wiki link, got %d: %#v", len(links), links)
+	}
+	if links[0] != "/docs/page1" {
+		t.Fatalf("link[0] = %q, want %q", links[0], "/docs/page1")
+	}
+}
+
+func TestExtractLinksFromMarkdown_IgnoresAssetDestinations(t *testing.T) {
+	md := `
+Asset absolute: [File](/assets/abc/manual.pdf)
+Asset relative: [Image](assets/abc/picture.png)
+Internal: [Page](/docs/page1)
+`
+
+	links := extractLinksFromMarkdown(md)
+
+	want := []string{"/docs/page1"}
+	if len(links) != len(want) {
+		t.Fatalf("expected %d links, got %d: %#v", len(want), len(links), links)
+	}
+	for i, w := range want {
+		if links[i] != w {
+			t.Fatalf("link[%d] = %q, want %q", i, links[i], w)
+		}
+	}
+}
+
+func TestExtractLinksFromMarkdown_IgnoresMixedCaseExternalSchemes(t *testing.T) {
+	md := `
+Uppercase HTTPS: [A](HTTPS://example.com)
+Uppercase HTTP: [B](HTTP://example.com)
+Uppercase MAILTO: [C](MAILTO:foo@bar.com)
+Mixed case Https: [D](Https://example.com)
+Mixed case Mailto: [E](Mailto:foo@bar.com)
+Internal: [Page](/docs/page1)
+`
+
+	links := extractLinksFromMarkdown(md)
+
+	want := []string{"/docs/page1"}
+	if len(links) != len(want) {
+		t.Fatalf("expected %d links, got %d: %#v", len(want), len(links), links)
+	}
+	for i, w := range want {
+		if links[i] != w {
+			t.Fatalf("link[%d] = %q, want %q", i, links[i], w)
+		}
+	}
+}
+
+// helper to create a small tree structure:
+// root
+//
+//	└─ docs
+//	     ├─ page1
+//	     └─ page2
+func setupTreeForLinksTest(t *testing.T) (*tree.TreeService, string, string) {
+	t.Helper()
+
+	storageDir := t.TempDir()
+	ts := tree.NewTreeService(storageDir)
+
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree failed: %v", err)
+	}
+
+	// create "docs" under root
+	docsIDPtr, err := ts.CreateNode("system", nil, "Docs", "docs", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreatePage docs failed: %v", err)
+	}
+	docsID := *docsIDPtr
+
+	// create "page1" and "page2" under docs
+	page1IDPtr, err := ts.CreateNode("system", &docsID, "Page 1", "page1", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreatePage page1 failed: %v", err)
+	}
+	page2IDPtr, err := ts.CreateNode("system", &docsID, "Page 2", "page2", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreatePage page2 failed: %v", err)
+	}
+
+	return ts, *page1IDPtr, *page2IDPtr
+}
+
+func TestResolveTargetLinks_FindsExistingTargets(t *testing.T) {
+	ts, page1ID, page2ID := setupTreeForLinksTest(t)
+
+	// current page: docs/page1
+	page1, err := ts.GetPage(page1ID)
+	if err != nil {
+		t.Fatalf("GetPage(page1) failed: %v", err)
+	}
+	currentPath := page1.CalculatePath() // should be "docs/page1"
+
+	// we want to link from page1 to page2 using a relative link
+	links := []string{"../page2"}
+
+	targets := resolveTargetLinks(ts, currentPath, links)
+
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target link, got %d: %#v", len(targets), targets)
+	}
+
+	got := targets[0]
+	if got.TargetPageID != page2ID {
+		t.Errorf("TargetPageID = %q, want %q", got.TargetPageID, page2ID)
+	}
+	if got.TargetPagePath == "" {
+		t.Errorf("TargetPagePath should not be empty")
+	}
+}
+
+func TestResolveTargetLinks_ReturnsBrokenTargetsForNonExisting(t *testing.T) {
+	ts, page1ID, _ := setupTreeForLinksTest(t)
+
+	page1, err := ts.GetPage(page1ID)
+	if err != nil {
+		t.Fatalf("GetPage(page1) failed: %v", err)
+	}
+	currentPath := page1.CalculatePath()
+
+	links := []string{
+		"./does-not-exist",
+		"/docs/unknown",
+	}
+
+	targets := resolveTargetLinks(ts, currentPath, links)
+
+	if len(targets) != 2 {
+		t.Fatalf("expected 2 target links, got %d: %#v", len(targets), targets)
+	}
+
+	if targets[0].Broken != true {
+		t.Errorf("targets[0].Broken = %v, want true", targets[0].Broken)
+	}
+	if targets[0].TargetPageID != "" {
+		t.Errorf("targets[0].TargetPageID = %q, want empty", targets[0].TargetPageID)
+	}
+	if targets[0].TargetPagePath != "/docs/page1/does-not-exist" {
+		t.Errorf("targets[0].TargetPagePath = %q, want %q", targets[0].TargetPagePath, "/docs/page1/does-not-exist")
+	}
+
+	if targets[1].Broken != true {
+		t.Errorf("targets[1].Broken = %v, want true", targets[1].Broken)
+	}
+	if targets[1].TargetPageID != "" {
+		t.Errorf("targets[1].TargetPageID = %q, want empty", targets[1].TargetPageID)
+	}
+	if targets[1].TargetPagePath != "/docs/unknown" {
+		t.Errorf("targets[1].TargetPagePath = %q, want %q", targets[1].TargetPagePath, "/docs/unknown")
+	}
+}
+
+func TestResolveTargetLinks_IgnoresAssetDestinations(t *testing.T) {
+	ts, page1ID, _ := setupTreeForLinksTest(t)
+
+	page1, err := ts.GetPage(page1ID)
+	if err != nil {
+		t.Fatalf("GetPage(page1) failed: %v", err)
+	}
+
+	targets := resolveTargetLinks(ts, page1.CalculatePath(), []string{
+		"/assets/abc/manual.pdf",
+		"assets/abc/picture.png",
+	})
+
+	if len(targets) != 0 {
+		t.Fatalf("expected asset links to be ignored, got %#v", targets)
+	}
+}
+
+func setupLinkService(t *testing.T) (*LinkService, *tree.TreeService, *LinksStore) {
+	t.Helper()
+
+	dataDir := t.TempDir()
+
+	ts := tree.NewTreeService(dataDir)
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree failed: %v", err)
+	}
+
+	store, err := NewLinksStore(dataDir)
+	if err != nil {
+		t.Fatalf("NewLinksStore failed: %v", err)
+	}
+
+	svc := NewLinkService(dataDir, ts, store)
+	return svc, ts, store
+}
+
+func createSimpleLinkedPages(t *testing.T, ts *tree.TreeService) (pageAID, pageBID string) {
+	t.Helper()
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreatePage a failed: %v", err)
+	}
+	pageAID = *aIDPtr
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreatePage b failed: %v", err)
+	}
+	pageBID = *bIDPtr
+
+	aPage, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage a failed: %v", err)
+	}
+	contentA := "Link to B: [Go to B](/b)"
+	if err := ts.UpdateNode("system", aPage.ID, aPage.Title, aPage.Slug, &contentA, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdatePage a failed: %v", err)
+	}
+
+	bPage, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage b failed: %v", err)
+	}
+	contentB := "# Page B\nNo outgoing links."
+	if err := ts.UpdateNode("system", bPage.ID, bPage.Title, bPage.Slug, &contentB, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdatePage b failed: %v", err)
+	}
+
+	return pageAID, pageBID
+}
+
+func TestLinkService_IndexAllPages_BuildsLinks(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	pageAID, pageBID := createSimpleLinkedPages(t, ts)
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	data, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+
+	if len(data.Backlinks) != 1 {
+		t.Fatalf("expected 1 backlink for pageB, got %d: %#v", len(data.Backlinks), data.Backlinks)
+	}
+
+	bl := data.Backlinks[0]
+	if bl.FromPageID != pageAID {
+		t.Errorf("FromPageID = %q, want %q", bl.FromPageID, pageAID)
+	}
+	if bl.ToPageID != pageBID {
+		t.Errorf("ToPageID = %q, want %q", bl.ToPageID, pageBID)
+	}
+	if bl.FromTitle == "" {
+		t.Errorf("FromTitle should not be empty")
+	}
+}
+
+func TestLinkService_IndexAllPages_ReplacesExistingLinks(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	pageAID, pageBID := createSimpleLinkedPages(t, ts)
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages (first) failed: %v", err)
+	}
+
+	aPage, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage a failed: %v", err)
+	}
+	var noLinks = "No more links."
+	if err := ts.UpdateNode("system", aPage.ID, aPage.Title, aPage.Slug, &noLinks, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdatePage a failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages (second) failed: %v", err)
+	}
+
+	data, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+
+	if len(data.Backlinks) != 0 {
+		t.Fatalf("expected 0 backlinks after reindex, got %d: %#v", len(data.Backlinks), data.Backlinks)
+	}
+}
+func TestLinkService_UpdateLinksForPage_OnlyAffectsOnePage(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	pageAID, pageBID := createSimpleLinkedPages(t, ts)
+
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage a failed: %v", err)
+	}
+	if err := svc.UpdateLinksForPage(pageA, pageA.Content); err != nil {
+		t.Fatalf("UpdateLinksForPage failed: %v", err)
+	}
+
+	dataB, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage for B failed: %v", err)
+	}
+	if len(dataB.Backlinks) != 1 {
+		t.Fatalf("expected 1 backlink for B, got %d: %#v", len(dataB.Backlinks), dataB.Backlinks)
+	}
+
+	dataA, err := svc.GetBacklinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage for A failed: %v", err)
+	}
+	if len(dataA.Backlinks) != 0 {
+		t.Fatalf("expected 0 backlinks for A, got %d: %#v", len(dataA.Backlinks), dataA.Backlinks)
+	}
+}
+
+func TestLinkService_ClearLinks_RemovesAllLinks(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	_, pageBID := createSimpleLinkedPages(t, ts)
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	if err := svc.ClearLinks(); err != nil {
+		t.Fatalf("ClearLinks failed: %v", err)
+	}
+
+	data, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+	if len(data.Backlinks) != 0 {
+		t.Fatalf("expected 0 backlinks after ClearBacklinks, got %d: %#v", len(data.Backlinks), data.Backlinks)
+	}
+}
+
+func TestLinkService_GetOutgoingLinksForPage_ReturnsOutgoingLinks(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+	pageAID, pageBID := createSimpleLinkedPages(t, ts)
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	result, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatalf("expected non-nil result")
+	}
+
+	if result.Count != 1 {
+		t.Fatalf("expected 1 outgoing link for pageA, got %d: %#v", result.Count, result.Outgoings)
+	}
+
+	item := result.Outgoings[0]
+
+	if item.FromPageID != pageAID {
+		t.Errorf("FromPageID = %q, want %q", item.FromPageID, pageAID)
+	}
+
+	if item.ToPageID != pageBID {
+		t.Errorf("ToPageID = %q, want %q", item.ToPageID, pageBID)
+	}
+
+	pageB, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage(pageB) failed: %v", err)
+	}
+	if item.ToPath != "/b" {
+		t.Errorf("ToPath = %q, want %q", item.ToPath, "/b")
+	}
+	if item.ToPageTitle != pageB.Title {
+		t.Errorf("ToPageTitle = %q, want %q", item.ToPageTitle, pageB.Title)
+	}
+}
+
+func TestLinkService_GetOutgoingLinksForPage_NoOutgoings(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Lonely Page", "lonely", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode lonely failed: %v", err)
+	}
+	lonelyID := *aIDPtr
+
+	page, err := ts.GetPage(lonelyID)
+	if err != nil {
+		t.Fatalf("GetPage lonely failed: %v", err)
+	}
+
+	var noLinks = "Just some text, no links."
+	if err := ts.UpdateNode("system", page.ID, page.Title, page.Slug, &noLinks, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode lonely failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	result, err := svc.GetOutgoingLinksForPage(lonelyID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatalf("expected non-nil result")
+	}
+
+	if result.Count != 0 {
+		t.Fatalf("expected 0 outgoing links, got %d: %#v", result.Count, result.Outgoings)
+	}
+}
+
+func TestLinkService_IndexAllPages_IgnoresAssetLinksInOutgoingAndBrokenSets(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode a failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode b failed: %v", err)
+	}
+	pageBID := *bIDPtr
+
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage a failed: %v", err)
+	}
+	contentA := "Asset: [Manual](/assets/abc/manual.pdf)\nPage: [Go](/b)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &contentA, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode a failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	outgoing, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+	if outgoing.Count != 1 {
+		t.Fatalf("expected only wiki links in outgoings, got %d: %#v", outgoing.Count, outgoing.Outgoings)
+	}
+	if outgoing.Outgoings[0].ToPath != "/b" {
+		t.Fatalf("ToPath = %q, want %q", outgoing.Outgoings[0].ToPath, "/b")
+	}
+
+	status, err := svc.GetLinkStatusForPage(pageAID, "/a")
+	if err != nil {
+		t.Fatalf("GetLinkStatusForPage failed: %v", err)
+	}
+	if status.Counts.Outgoings != 1 || status.Counts.BrokenOutgoings != 0 {
+		t.Fatalf("unexpected link status counts: %#v", status.Counts)
+	}
+
+	backlinks, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+	if backlinks.Count != 1 {
+		t.Fatalf("expected only page backlink to remain, got %d: %#v", backlinks.Count, backlinks.Backlinks)
+	}
+}
+
+func TestToOutgoingResult_MapsOutgoingToResultItems(t *testing.T) {
+	ts, page1ID, page2ID := setupTreeForLinksTest(t)
+
+	root := ts.GetTree()
+	if root == nil {
+		t.Fatalf("tree root is nil")
+	}
+
+	outgoings := []Outgoing{{FromPageID: page1ID, ToPageID: page2ID, ToPath: "/docs/page2", Broken: false, FromTitle: "Page 1"}}
+
+	result := toOutgoingLinkResult(ts, outgoings)
+	if result == nil {
+		t.Fatalf("expected non-nil result")
+	}
+	if result.Count != 1 {
+		t.Fatalf("expected 1 outgoing, got %d", result.Count)
+	}
+
+	item := result.Outgoings[0]
+
+	if item.FromPageID != page1ID {
+		t.Errorf("FromPageID = %q, want %q", item.FromPageID, page1ID)
+	}
+	if item.ToPageID != page2ID {
+		t.Errorf("ToPageID = %q, want %q", item.ToPageID, page2ID)
+	}
+
+	page2, err := ts.GetPage(page2ID)
+	if err != nil {
+		t.Fatalf("GetPage page2 failed: %v", err)
+	}
+	if item.ToPageTitle != page2.Title {
+		t.Errorf("ToPageTitle = %q, want %q", item.ToPageTitle, page2.Title)
+	}
+	if item.ToPath != "/docs/page2" {
+		t.Errorf("ToPath = %q, want %q", item.ToPath, "/docs/page2")
+	}
+	if item.Broken {
+		t.Errorf("Broken = %v, want %v", item.Broken, false)
+	}
+
+}
+
+func TestToOutgoingResult_WikilinkSentinelDisplaysPlainTitle(t *testing.T) {
+	ts, page1ID, _ := setupTreeForLinksTest(t)
+
+	outgoings := []Outgoing{{
+		FromPageID: page1ID,
+		ToPath:     wikilinkSentinel("Kafka"),
+		Broken:     true,
+		FromTitle:  "Page 1",
+	}}
+
+	result := toOutgoingLinkResult(ts, outgoings)
+	if result == nil {
+		t.Fatalf("expected non-nil result")
+	}
+	if result.Count != 1 {
+		t.Fatalf("expected 1 outgoing, got %d", result.Count)
+	}
+
+	item := result.Outgoings[0]
+	if item.ToPath != "Kafka" {
+		t.Errorf("ToPath = %q, want %q", item.ToPath, "Kafka")
+	}
+	if item.ToPath == "[[Kafka]]" {
+		t.Errorf("ToPath = %q, should not include wiki-link brackets", item.ToPath)
+	}
+	if !item.Broken {
+		t.Errorf("Broken = %v, want %v", item.Broken, true)
+	}
+}
+
+func TestLinkService_LateCreatedTarget_BecomesResolvedAfterReindex(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode a failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	aPage, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage a failed: %v", err)
+	}
+	var linkToB = "Link to B: [Go](/b)"
+	if err := ts.UpdateNode("system", aPage.ID, aPage.Title, aPage.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode a failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	out1, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+	if out1.Count != 1 {
+		t.Fatalf("expected 1 outgoing, got %d: %#v", out1.Count, out1.Outgoings)
+	}
+	if out1.Outgoings[0].Broken != true {
+		t.Fatalf("expected outgoing to be broken, got %#v", out1.Outgoings[0])
+	}
+	if out1.Outgoings[0].ToPath != "/b" {
+		t.Fatalf("expected ToPath '/b', got %q", out1.Outgoings[0].ToPath)
+	}
+	if out1.Outgoings[0].ToPageID != "" {
+		t.Fatalf("expected empty ToPageID for broken link, got %q", out1.Outgoings[0].ToPageID)
+	}
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode b failed: %v", err)
+	}
+	pageBID := *bIDPtr
+
+	bPage, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage b failed: %v", err)
+	}
+	var pageBContent = "# Page B"
+	if err := ts.UpdateNode("system", bPage.ID, bPage.Title, bPage.Slug, &pageBContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode b failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages (second) failed: %v", err)
+	}
+
+	out2, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage (second) failed: %v", err)
+	}
+	if out2.Count != 1 {
+		t.Fatalf("expected 1 outgoing, got %d: %#v", out2.Count, out2.Outgoings)
+	}
+	if out2.Outgoings[0].Broken != false {
+		t.Fatalf("expected outgoing to be resolved, got %#v", out2.Outgoings[0])
+	}
+	if out2.Outgoings[0].ToPageID != pageBID {
+		t.Fatalf("expected ToPageID %q, got %q", pageBID, out2.Outgoings[0].ToPageID)
+	}
+
+	bl, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+	if bl.Count != 1 {
+		t.Fatalf("expected 1 backlink, got %d: %#v", bl.Count, bl.Backlinks)
+	}
+	if bl.Backlinks[0].FromPageID != pageAID {
+		t.Fatalf("expected FromPageID %q, got %q", pageAID, bl.Backlinks[0].FromPageID)
+	}
+	if bl.Backlinks[0].ToPageID != pageBID {
+		t.Fatalf("expected ToPageID %q, got %q", pageBID, bl.Backlinks[0].ToPageID)
+	}
+}
+
+func TestLinkService_HealOnPageCreate_ResolvesBrokenLinksWithoutReindex(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	var linkToB = "Link to B: [Go](/b)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	out1, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage failed: %v", err)
+	}
+	if out1.Count != 1 {
+		t.Fatalf("expected 1 outgoing for A, got %d: %#v", out1.Count, out1.Outgoings)
+	}
+
+	if out1.Outgoings[0].Broken != true {
+		t.Fatalf("expected outgoing to be broken before heal, got %#v", out1.Outgoings[0])
+	}
+	if out1.Outgoings[0].ToPath != "/b" {
+		t.Fatalf("expected ToPath '/b' before heal, got %q", out1.Outgoings[0].ToPath)
+	}
+	if out1.Outgoings[0].ToPageID != "" {
+		t.Fatalf("expected empty ToPageID before heal, got %q", out1.Outgoings[0].ToPageID)
+	}
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode B failed: %v", err)
+	}
+	pageBID := *bIDPtr
+
+	pageB, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage B failed: %v", err)
+	}
+
+	if err := svc.HealLinksForExactPath(pageB); err != nil {
+		t.Fatalf("HealLinksForExactPath failed: %v", err)
+	}
+
+	out2, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage (after heal) failed: %v", err)
+	}
+	if out2.Count != 1 {
+		t.Fatalf("expected 1 outgoing for A after heal, got %d: %#v", out2.Count, out2.Outgoings)
+	}
+
+	if out2.Outgoings[0].Broken != false {
+		t.Fatalf("expected outgoing to be resolved after heal, got %#v", out2.Outgoings[0])
+	}
+	if out2.Outgoings[0].ToPageID != pageBID {
+		t.Fatalf("expected ToPageID %q after heal, got %q", pageBID, out2.Outgoings[0].ToPageID)
+	}
+
+	bl, err := svc.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+	if bl.Count != 1 {
+		t.Fatalf("expected 1 backlink for B after heal, got %d: %#v", bl.Count, bl.Backlinks)
+	}
+	if bl.Backlinks[0].FromPageID != pageAID {
+		t.Fatalf("expected backlink FromPageID %q, got %q", pageAID, bl.Backlinks[0].FromPageID)
+	}
+	if bl.Backlinks[0].ToPageID != pageBID {
+		t.Fatalf("expected backlink ToPageID %q, got %q", pageBID, bl.Backlinks[0].ToPageID)
+	}
+}
+
+func TestLinksStore_GetBrokenIncomingForPath_ReturnsBrokenLinks(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+
+	// Create three pages: A, B, C
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode B failed: %v", err)
+	}
+	pageBID := *bIDPtr
+
+	cIDPtr, err := ts.CreateNode("system", nil, "Page C", "c", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode C failed: %v", err)
+	}
+	pageCID := *cIDPtr
+
+	// Update A and B to link to a non-existent page "/nonexistent"
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	var linkToMissing = "Link: [Missing](/nonexistent)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToMissing, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	pageB, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage B failed: %v", err)
+	}
+	if err := ts.UpdateNode("system", pageB.ID, pageB.Title, pageB.Slug, &linkToMissing, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode B failed: %v", err)
+	}
+
+	// Page C links to a different broken page
+	pageC, err := ts.GetPage(pageCID)
+	if err != nil {
+		t.Fatalf("GetPage C failed: %v", err)
+	}
+	var linkToOther = "Link: [Other](/other-missing)"
+	if err := ts.UpdateNode("system", pageC.ID, pageC.Title, pageC.Slug, &linkToOther, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode C failed: %v", err)
+	}
+
+	// Index all pages to create broken links
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	// Test: GetBrokenIncomingForPath should return broken links for "/nonexistent"
+	brokenLinks, err := store.GetBrokenIncomingForPath("/nonexistent")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath failed: %v", err)
+	}
+
+	if len(brokenLinks) != 2 {
+		t.Fatalf("expected 2 broken links for /nonexistent, got %d: %#v", len(brokenLinks), brokenLinks)
+	}
+
+	// Verify all returned links are marked as broken
+	for i, link := range brokenLinks {
+		if !link.Broken {
+			t.Errorf("brokenLinks[%d].Broken = %v, want true", i, link.Broken)
+		}
+		if link.ToPageID != "" {
+			t.Errorf("brokenLinks[%d].ToPageID = %q, want empty string for broken link", i, link.ToPageID)
+		}
+		if link.FromTitle == "" {
+			t.Errorf("brokenLinks[%d].FromTitle should not be empty", i)
+		}
+	}
+
+	// Verify the links come from pages A and B
+	fromPageIDs := map[string]struct{}{}
+	for _, link := range brokenLinks {
+		fromPageIDs[link.FromPageID] = struct{}{}
+	}
+	if _, found := fromPageIDs[pageAID]; !found {
+		t.Errorf("expected broken link from page A (%s)", pageAID)
+	}
+	if _, found := fromPageIDs[pageBID]; !found {
+		t.Errorf("expected broken link from page B (%s)", pageBID)
+	}
+}
+
+func TestLinksStore_GetBrokenIncomingForPath_FiltersByPath(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode B failed: %v", err)
+	}
+	pageBID := *bIDPtr
+
+	// Page A links to "/missing1"
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	var linkToMissing1 = "Link: [Missing1](/missing1)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToMissing1, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	// Page B links to "/missing2"
+	pageB, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage B failed: %v", err)
+	}
+	var linkToMissing2 = "Link: [Missing2](/missing2)"
+	if err := ts.UpdateNode("system", pageB.ID, pageB.Title, pageB.Slug, &linkToMissing2, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode B failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	// Test: Should only return broken links for "/missing1"
+	broken1, err := store.GetBrokenIncomingForPath("/missing1")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath(/missing1) failed: %v", err)
+	}
+
+	if len(broken1) != 1 {
+		t.Fatalf("expected 1 broken link for /missing1, got %d: %#v", len(broken1), broken1)
+	}
+	if broken1[0].FromPageID != pageAID {
+		t.Errorf("broken link FromPageID = %q, want %q", broken1[0].FromPageID, pageAID)
+	}
+
+	// Test: Should only return broken links for "/missing2"
+	broken2, err := store.GetBrokenIncomingForPath("/missing2")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath(/missing2) failed: %v", err)
+	}
+
+	if len(broken2) != 1 {
+		t.Fatalf("expected 1 broken link for /missing2, got %d: %#v", len(broken2), broken2)
+	}
+	if broken2[0].FromPageID != pageBID {
+		t.Errorf("broken link FromPageID = %q, want %q", broken2[0].FromPageID, pageBID)
+	}
+}
+
+func TestLinksStore_GetBrokenIncomingForPath_EmptyWhenNoBrokenLinks(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	_, err = ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode B failed: %v", err)
+	}
+
+	// Page A links to existing Page B (not broken)
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	var linkToB = "Link: [To B](/b)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	// Test: Should return empty for "/b" since the link is not broken
+	brokenLinks, err := store.GetBrokenIncomingForPath("/b")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath failed: %v", err)
+	}
+
+	if len(brokenLinks) != 0 {
+		t.Fatalf("expected 0 broken links for /b (link exists), got %d: %#v", len(brokenLinks), brokenLinks)
+	}
+
+	// Test: Should return empty for a path that has no links at all
+	noLinks, err := store.GetBrokenIncomingForPath("/never-linked")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath(/never-linked) failed: %v", err)
+	}
+
+	if len(noLinks) != 0 {
+		t.Fatalf("expected 0 broken links for /never-linked, got %d: %#v", len(noLinks), noLinks)
+	}
+}
+
+func TestLinksStore_GetBrokenIncomingForPath_OrdersByFromTitle(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+
+	// Create three pages with titles that should be ordered alphabetically
+	zIDPtr, err := ts.CreateNode("system", nil, "Zebra Page", "z", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode Z failed: %v", err)
+	}
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Alpha Page", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+
+	mIDPtr, err := ts.CreateNode("system", nil, "Middle Page", "m", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode M failed: %v", err)
+	}
+
+	// All three pages link to the same non-existent page
+	pageIDs := []string{*zIDPtr, *aIDPtr, *mIDPtr}
+	for _, id := range pageIDs {
+		page, err := ts.GetPage(id)
+		if err != nil {
+			t.Fatalf("GetPage(%s) failed: %v", id, err)
+		}
+		var linkToMissing = "Link: [Missing](/missing)"
+		if err := ts.UpdateNode("system", page.ID, page.Title, page.Slug, &linkToMissing, tree.VersionUnchecked, nil, nil, false); err != nil {
+			t.Fatalf("UpdateNode(%s) failed: %v", id, err)
+		}
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	// Test: Results should be ordered by from_title ASC
+	brokenLinks, err := store.GetBrokenIncomingForPath("/missing")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath failed: %v", err)
+	}
+
+	if len(brokenLinks) != 3 {
+		t.Fatalf("expected 3 broken links, got %d: %#v", len(brokenLinks), brokenLinks)
+	}
+
+	// Verify ordering: Alpha Page, Middle Page, Zebra Page
+	expectedTitles := []string{"Alpha Page", "Middle Page", "Zebra Page"}
+	for i, expected := range expectedTitles {
+		if brokenLinks[i].FromTitle != expected {
+			t.Errorf("brokenLinks[%d].FromTitle = %q, want %q", i, brokenLinks[i].FromTitle, expected)
+		}
+	}
+}
+
+func TestLinksStore_GetBrokenIncomingForPath_OnlyReturnsBrokenNotResolved(t *testing.T) {
+	svc, ts, store := setupLinkService(t)
+
+	// Create Page A that links to a non-existent page
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	var linkToB = "Link: [To B](/b)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &linkToB, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	// Index - this creates a broken link since B doesn't exist
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages (first) failed: %v", err)
+	}
+
+	// Verify the broken link exists
+	brokenBefore, err := store.GetBrokenIncomingForPath("/b")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath (before) failed: %v", err)
+	}
+	if len(brokenBefore) != 1 {
+		t.Fatalf("expected 1 broken link before creating B, got %d", len(brokenBefore))
+	}
+
+	// Now create Page B - this should heal the link
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode B failed: %v", err)
+	}
+	pageBID := *bIDPtr
+
+	pageB, err := ts.GetPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetPage B failed: %v", err)
+	}
+	var contentB = "# Page B"
+	if err := ts.UpdateNode("system", pageB.ID, pageB.Title, pageB.Slug, &contentB, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode B failed: %v", err)
+	}
+
+	// Use HealLinksForExactPath to heal the broken link
+	if err := svc.HealLinksForExactPath(pageB); err != nil {
+		t.Fatalf("HealLinksForExactPath failed: %v", err)
+	}
+
+	// Verify the link is no longer broken
+	brokenAfter, err := store.GetBrokenIncomingForPath("/b")
+	if err != nil {
+		t.Fatalf("GetBrokenIncomingForPath (after) failed: %v", err)
+	}
+	if len(brokenAfter) != 0 {
+		t.Fatalf("expected 0 broken links after healing, got %d: %#v", len(brokenAfter), brokenAfter)
+	}
+
+	// Verify the link still exists but is not broken
+	backlinks, err := store.GetBacklinksForPage(pageBID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage failed: %v", err)
+	}
+	if len(backlinks) != 1 {
+		t.Fatalf("expected 1 resolved backlink, got %d: %#v", len(backlinks), backlinks)
+	}
+	if backlinks[0].FromPageID != pageAID {
+		t.Errorf("backlink FromPageID = %q, want %q", backlinks[0].FromPageID, pageAID)
+	}
+}
+
+func TestLinkService_UpdateLinksAndHealForPages_UpdatesAndHealsMultiplePages(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	aIDPtr, err := ts.CreateNode("system", nil, "Page A", "a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode A failed: %v", err)
+	}
+	pageAID := *aIDPtr
+
+	cIDPtr, err := ts.CreateNode("system", nil, "Page C", "c", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode C failed: %v", err)
+	}
+	pageCID := *cIDPtr
+
+	pageA, err := ts.GetPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetPage A failed: %v", err)
+	}
+	contentA := "Link: [B](/b)"
+	if err := ts.UpdateNode("system", pageA.ID, pageA.Title, pageA.Slug, &contentA, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode A failed: %v", err)
+	}
+
+	pageC, err := ts.GetPage(pageCID)
+	if err != nil {
+		t.Fatalf("GetPage C failed: %v", err)
+	}
+	contentC := "Link: [D](/d)"
+	if err := ts.UpdateNode("system", pageC.ID, pageC.Title, pageC.Slug, &contentC, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode C failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	bIDPtr, err := ts.CreateNode("system", nil, "Page B", "b", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode B failed: %v", err)
+	}
+	pageB, err := ts.GetPage(*bIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage B failed: %v", err)
+	}
+
+	dIDPtr, err := ts.CreateNode("system", nil, "Page D", "d", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode D failed: %v", err)
+	}
+	pageD, err := ts.GetPage(*dIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage D failed: %v", err)
+	}
+
+	if err := svc.UpdateLinksAndHealForPages([]*tree.Page{pageB, pageD}); err != nil {
+		t.Fatalf("UpdateLinksAndHealForPages failed: %v", err)
+	}
+
+	outA, err := svc.GetOutgoingLinksForPage(pageAID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage(A) failed: %v", err)
+	}
+	if outA.Count != 1 {
+		t.Fatalf("expected 1 outgoing for A, got %d: %#v", outA.Count, outA.Outgoings)
+	}
+	if outA.Outgoings[0].Broken {
+		t.Fatalf("expected A link to be healed, got %#v", outA.Outgoings[0])
+	}
+	if outA.Outgoings[0].ToPageID != pageB.ID {
+		t.Fatalf("A ToPageID = %q, want %q", outA.Outgoings[0].ToPageID, pageB.ID)
+	}
+
+	outC, err := svc.GetOutgoingLinksForPage(pageCID)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage(C) failed: %v", err)
+	}
+	if outC.Count != 1 {
+		t.Fatalf("expected 1 outgoing for C, got %d: %#v", outC.Count, outC.Outgoings)
+	}
+	if outC.Outgoings[0].Broken {
+		t.Fatalf("expected C link to be healed, got %#v", outC.Outgoings[0])
+	}
+	if outC.Outgoings[0].ToPageID != pageD.ID {
+		t.Fatalf("C ToPageID = %q, want %q", outC.Outgoings[0].ToPageID, pageD.ID)
+	}
+}
+
+func TestLinkService_UpdateLinksAndHealForPages_ReindexesOutgoingForSourcePages(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	sourceIDPtr, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source failed: %v", err)
+	}
+	sourceID := *sourceIDPtr
+
+	oldTargetIDPtr, err := ts.CreateNode("system", nil, "Old Target", "old-target", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode old target failed: %v", err)
+	}
+	oldTargetID := *oldTargetIDPtr
+
+	source, err := ts.GetPage(sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source failed: %v", err)
+	}
+	oldContent := "Link: [Old](/old-target)"
+	if err := ts.UpdateNode("system", source.ID, source.Title, source.Slug, &oldContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode source failed: %v", err)
+	}
+
+	if err := svc.IndexAllPages(); err != nil {
+		t.Fatalf("IndexAllPages failed: %v", err)
+	}
+
+	newTargetIDPtr, err := ts.CreateNode("system", nil, "New Target", "new-target", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode new target failed: %v", err)
+	}
+	newTargetID := *newTargetIDPtr
+
+	updatedContent := "Link: [New](/new-target)"
+	if err := ts.UpdateNode("system", source.ID, source.Title, source.Slug, &updatedContent, tree.VersionUnchecked, nil, nil, false); err != nil {
+		t.Fatalf("UpdateNode source (rewrite) failed: %v", err)
+	}
+
+	updatedSource, err := ts.GetPage(sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source (updated) failed: %v", err)
+	}
+
+	if err := svc.UpdateLinksAndHealForPages([]*tree.Page{updatedSource}); err != nil {
+		t.Fatalf("UpdateLinksAndHealForPages failed: %v", err)
+	}
+
+	oldBacklinks, err := svc.GetBacklinksForPage(oldTargetID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage(old target) failed: %v", err)
+	}
+	if oldBacklinks.Count != 0 {
+		t.Fatalf("expected 0 backlinks for old target, got %d: %#v", oldBacklinks.Count, oldBacklinks.Backlinks)
+	}
+
+	newBacklinks, err := svc.GetBacklinksForPage(newTargetID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage(new target) failed: %v", err)
+	}
+	if newBacklinks.Count != 1 {
+		t.Fatalf("expected 1 backlink for new target, got %d: %#v", newBacklinks.Count, newBacklinks.Backlinks)
+	}
+	if newBacklinks.Backlinks[0].FromPageID != sourceID {
+		t.Fatalf("new backlink FromPageID = %q, want %q", newBacklinks.Backlinks[0].FromPageID, sourceID)
+	}
+}
+
+// ─── extractWikiLinksFromMarkdown ────────────────────────────────────────────
+
+func TestExtractWikiLinksFromMarkdown_BasicSyntax(t *testing.T) {
+	md := `
+See [[Project Plan]] for details.
+Also check [[Meeting Notes|our last meeting]].
+And [[Folder/SubPage]] path hint.
+Normal [link](/docs/page) stays untouched.
+`
+	got := extractWikiLinksFromMarkdown(md)
+	want := []string{"Project Plan", "Meeting Notes", "Folder/SubPage"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d wiki links, got %d: %v", len(want), len(got), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("got[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_DeduplicatesTargets(t *testing.T) {
+	md := `[[Notes]] and [[Notes]] again and [[Notes|different alias]].`
+	got := extractWikiLinksFromMarkdown(md)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 deduplicated entry, got %d: %v", len(got), got)
+	}
+	if got[0] != "Notes" {
+		t.Errorf("got %q, want %q", got[0], "Notes")
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_IgnoresFencedCodeBlock(t *testing.T) {
+	md := "```bash\nif [[ -n \"$computed_hash\" && -n \"$src_hash\" ]]; then\n  [[ \"$src_hash\" == sha256-* ]]\nfi\n```\n"
+
+	got := extractWikiLinksFromMarkdown(md)
+	if len(got) != 0 {
+		t.Fatalf("expected no wiki links from fenced code block, got %v", got)
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_IgnoresInlineCode(t *testing.T) {
+	got := extractWikiLinksFromMarkdown("`[[ -n $x ]]`")
+	if len(got) != 0 {
+		t.Fatalf("expected no wiki links from inline code, got %v", got)
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_MixedRealAndCodeBlock(t *testing.T) {
+	md := "See [[Real Page]].\n\n```\n[[ -z \"$x\" ]]\n```\n"
+
+	got := extractWikiLinksFromMarkdown(md)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 wiki link, got %d: %v", len(got), got)
+	}
+	if got[0] != "Real Page" {
+		t.Errorf("got %q, want %q", got[0], "Real Page")
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_IgnoresIndentedCodeBlock(t *testing.T) {
+	got := extractWikiLinksFromMarkdown("    [[ Something ]]\n")
+	if len(got) != 0 {
+		t.Fatalf("expected no wiki links from indented code block, got %v", got)
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_IgnoresBashConditionalsOutsideCodeBlocks(t *testing.T) {
+	cases := []string{
+		`if [[ -n "$computed_hash" && -n "$src_hash" ]]; then`,
+		`if [[ "$src_hash" == sha256-* ]]; then`,
+	}
+	for _, content := range cases {
+		got := extractWikiLinksFromMarkdown(content)
+		if len(got) != 0 {
+			t.Errorf("input %q: expected no wiki links, got %v", content, got)
+		}
+	}
+}
+
+func TestExtractWikiLinksFromMarkdown_Empty(t *testing.T) {
+	got := extractWikiLinksFromMarkdown("No wiki links here.")
+	if len(got) != 0 {
+		t.Fatalf("expected empty slice, got %v", got)
+	}
+}
+
+// ─── resolveWikiLinkTargets ──────────────────────────────────────────────────
+
+func TestResolveWikiLinkTargets_SingleTitleMatch(t *testing.T) {
+	ts, page1ID, _ := setupTreeForLinksTest(t)
+
+	targets := resolveWikiLinkTargets(ts, []string{"Page 1"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d: %v", len(targets), targets)
+	}
+	if targets[0].TargetPageID != page1ID {
+		t.Errorf("TargetPageID = %q, want %q", targets[0].TargetPageID, page1ID)
+	}
+	if targets[0].Broken {
+		t.Errorf("expected resolved link, got broken")
+	}
+}
+
+func TestResolveWikiLinkTargets_NoMatch_ReturnsBroken(t *testing.T) {
+	ts, _, _ := setupTreeForLinksTest(t)
+
+	targets := resolveWikiLinkTargets(ts, []string{"Nonexistent Page"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if !targets[0].Broken {
+		t.Errorf("expected broken link for unmatched title")
+	}
+}
+
+func TestResolveWikiLinkTargets_AmbiguousTitle_ReturnsBroken(t *testing.T) {
+	storageDir := t.TempDir()
+	ts := tree.NewTreeService(storageDir)
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+
+	sectionID, err := ts.CreateNode("system", nil, "Docs", "docs", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode section: %v", err)
+	}
+	_, err = ts.CreateNode("system", nil, "Notes", "notes-root", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode notes-root: %v", err)
+	}
+	_, err = ts.CreateNode("system", sectionID, "Notes", "notes-child", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode notes-child: %v", err)
+	}
+
+	targets := resolveWikiLinkTargets(ts, []string{"Notes"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if !targets[0].Broken {
+		t.Errorf("expected broken link for ambiguous title")
+	}
+}
+
+func TestResolveWikiLinkTargets_PathHint_Resolved(t *testing.T) {
+	ts, page1ID, _ := setupTreeForLinksTest(t)
+
+	targets := resolveWikiLinkTargets(ts, []string{"docs/page1"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if targets[0].TargetPageID != page1ID {
+		t.Errorf("TargetPageID = %q, want %q", targets[0].TargetPageID, page1ID)
+	}
+	if targets[0].Broken {
+		t.Errorf("expected resolved path hint, got broken")
+	}
+}
+
+func TestResolveWikiLinkTargets_PathHint_BrokenWhenNotFound(t *testing.T) {
+	ts, _, _ := setupTreeForLinksTest(t)
+
+	targets := resolveWikiLinkTargets(ts, []string{"docs/nonexistent"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if !targets[0].Broken {
+		t.Errorf("expected broken link for missing path hint")
+	}
+}
+
+func TestResolveWikiLinkTargets_BrokenSentinelFormat(t *testing.T) {
+	ts, _, _ := setupTreeForLinksTest(t)
+
+	targets := resolveWikiLinkTargets(ts, []string{"Nonexistent Page"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if !targets[0].Broken {
+		t.Errorf("expected broken link")
+	}
+	want := wikilinkSentinel("Nonexistent Page")
+	if targets[0].TargetPagePath != want {
+		t.Errorf("TargetPagePath = %q, want %q", targets[0].TargetPagePath, want)
+	}
+}
+
+func TestResolveWikiLinkTargets_SlashTitleFallback(t *testing.T) {
+	storageDir := t.TempDir()
+	ts := tree.NewTreeService(storageDir)
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	idPtr, err := ts.CreateNode("system", nil, "C/C++ Guide", "c-cpp-guide", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	// "C/C++ Guide" contains "/" but is tried as a title first and resolves
+	// directly — no colliding route path exists in this tree.
+	targets := resolveWikiLinkTargets(ts, []string{"C/C++ Guide"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if targets[0].Broken {
+		t.Errorf("expected resolved link via title fallback, got broken")
+	}
+	if targets[0].TargetPageID != *idPtr {
+		t.Errorf("TargetPageID = %q, want %q", targets[0].TargetPageID, *idPtr)
+	}
+}
+
+// TestResolveWikiLinkTargets_SlashTitle_PrefersTitleOverCollidingRoutePath is
+// the regression test for "WikiLinks Break When the Target Title Contains a
+// Slash": a page titled "TCP/IP" must resolve to itself even when an
+// unrelated route path "tcp/ip" also exists in the tree — before the fix,
+// the route-path lookup was tried first and silently won, resolving the
+// link to the wrong page with Broken staying false.
+func TestResolveWikiLinkTargets_SlashTitle_PrefersTitleOverCollidingRoutePath(t *testing.T) {
+	storageDir := t.TempDir()
+	ts := tree.NewTreeService(storageDir)
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+
+	// A section slugged "TCP" with a child slugged "IP" — a colliding route
+	// path "TCP/IP" for the unrelated target string "TCP/IP". Slug matching
+	// is case-sensitive (findChildBySlugExactInParentLocked), so the slugs
+	// must match the target's exact casing for the collision to be real.
+	sectionID, err := ts.CreateNode("system", nil, "TCP Docs", "TCP", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode section: %v", err)
+	}
+	_, err = ts.CreateNode("system", sectionID, "IP Notes", "IP", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode child: %v", err)
+	}
+
+	// The actually-titled page "TCP/IP", unrelated to the section above.
+	titledIDPtr, err := ts.CreateNode("system", nil, "TCP/IP", "tcp-ip-guide", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode titled page: %v", err)
+	}
+
+	targets := resolveWikiLinkTargets(ts, []string{"TCP/IP"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if targets[0].Broken {
+		t.Fatalf("expected resolved link to the titled page, got broken")
+	}
+	if targets[0].TargetPageID != *titledIDPtr {
+		t.Errorf("TargetPageID = %q, want %q (the titled page, not the colliding slug path)", targets[0].TargetPageID, *titledIDPtr)
+	}
+	want := wikilinkSentinel("TCP/IP")
+	if targets[0].TargetPagePath != want {
+		t.Errorf("TargetPagePath = %q, want %q", targets[0].TargetPagePath, want)
+	}
+}
+
+func TestResolveWikiLinkTargets_AmbiguousSlashTitle_ReturnsBroken(t *testing.T) {
+	storageDir := t.TempDir()
+	ts := tree.NewTreeService(storageDir)
+	if err := ts.LoadTree(); err != nil {
+		t.Fatalf("LoadTree: %v", err)
+	}
+	if _, err := ts.CreateNode("system", nil, "TCP/IP", "tcp-ip-a", pageNodeKind()); err != nil {
+		t.Fatalf("CreateNode a: %v", err)
+	}
+	if _, err := ts.CreateNode("system", nil, "TCP/IP", "tcp-ip-b", pageNodeKind()); err != nil {
+		t.Fatalf("CreateNode b: %v", err)
+	}
+
+	targets := resolveWikiLinkTargets(ts, []string{"TCP/IP"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if !targets[0].Broken {
+		t.Errorf("expected broken link for ambiguous slash-title match")
+	}
+}
+
+// ─── HealWikiLinksForPage ────────────────────────────────────────────────────
+
+func TestLinkService_HealWikiLinksForPage_HealsAfterPageCreation(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	// Page A contains [[Target Page]] which does not exist yet.
+	pageAIDPtr, err := ts.CreateNode("system", nil, "Page A", "page-a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode page-a: %v", err)
+	}
+	pageA, err := ts.GetPage(*pageAIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage page-a: %v", err)
+	}
+	if err := svc.UpdateLinksForPage(pageA, "See [[Target Page]] for details."); err != nil {
+		t.Fatalf("UpdateLinksForPage: %v", err)
+	}
+
+	// Outgoing should be broken (target doesn't exist yet).
+	out, err := svc.GetOutgoingLinksForPage(*pageAIDPtr)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage: %v", err)
+	}
+	if out.Count != 1 || !out.Outgoings[0].Broken {
+		t.Fatalf("expected 1 broken outgoing, got %+v", out)
+	}
+
+	// Create the target page.
+	targetIDPtr, err := ts.CreateNode("system", nil, "Target Page", "target-page", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode target-page: %v", err)
+	}
+	targetPage, err := ts.GetPage(*targetIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage target-page: %v", err)
+	}
+
+	// Healing via HealWikiLinksForPage.
+	if err := svc.HealWikiLinksForPage(targetPage); err != nil {
+		t.Fatalf("HealWikiLinksForPage: %v", err)
+	}
+
+	// Outgoing should now be resolved.
+	out2, err := svc.GetOutgoingLinksForPage(*pageAIDPtr)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage after heal: %v", err)
+	}
+	if out2.Count != 1 || out2.Outgoings[0].Broken {
+		t.Fatalf("expected 1 resolved outgoing after heal, got %+v", out2)
+	}
+	if out2.Outgoings[0].ToPageID != *targetIDPtr {
+		t.Errorf("ToPageID = %q, want %q", out2.Outgoings[0].ToPageID, *targetIDPtr)
+	}
+}
+
+// Fix 2: HealWikiLinksForTitle uses COLLATE NOCASE, so [[notes]] heals
+// when a page titled "Notes" is created.
+func TestLinkService_HealWikiLinksForPage_CaseInsensitive(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	pageAIDPtr, err := ts.CreateNode("system", nil, "Page A", "page-a", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode page-a: %v", err)
+	}
+	pageA, err := ts.GetPage(*pageAIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	// lowercase wiki-link
+	if err := svc.UpdateLinksForPage(pageA, "See [[notes]] here."); err != nil {
+		t.Fatalf("UpdateLinksForPage: %v", err)
+	}
+
+	// Create a page with mixed-case title "Notes"
+	targetIDPtr, err := ts.CreateNode("system", nil, "Notes", "notes", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode notes: %v", err)
+	}
+	targetPage, err := ts.GetPage(*targetIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage notes: %v", err)
+	}
+
+	if err := svc.HealWikiLinksForPage(targetPage); err != nil {
+		t.Fatalf("HealWikiLinksForPage: %v", err)
+	}
+
+	out, err := svc.GetOutgoingLinksForPage(*pageAIDPtr)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage: %v", err)
+	}
+	if out.Count != 1 || out.Outgoings[0].Broken {
+		t.Fatalf("expected [[notes]] to be healed by page titled 'Notes', got %+v", out)
+	}
+}
+
+// Fix 3: Sentinel paths are skipped in rewriteResolvedTargets so they are
+// not mangled into "/wikilink:..." route paths during rename refactors.
+func TestRewriteResolvedTargets_SkipsWikilinkSentinels(t *testing.T) {
+	ts, page1ID, _ := setupTreeForLinksTest(t)
+
+	page1, err := ts.GetPage(page1ID)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+
+	outgoings := []Outgoing{
+		{FromPageID: page1ID, ToPath: wikilinkSentinel("Missing Page"), Broken: true},
+		{FromPageID: page1ID, ToPath: "/docs/page1", Broken: false, ToPageID: page1ID},
+	}
+	rules := []RewriteRule{{OldPath: "/docs", NewPath: "/archive"}}
+
+	result := rewriteResolvedTargets(page1.CalculatePath(), outgoings, rules, ts)
+
+	// Only the real path link should be in the result; sentinel is skipped.
+	for _, r := range result {
+		if strings.HasPrefix(r.TargetPagePath, "wikilink:") || strings.HasPrefix(r.TargetPagePath, "/wikilink:") {
+			t.Errorf("sentinel path must not appear in rewrite result, got %q", r.TargetPagePath)
+		}
+	}
+}
+
+// Fix 4: Broken path hints (e.g. [[docs/nonexistent]]) are stored as normal
+// broken route paths so HealLinksForExactPath heals them when the page appears.
+func TestResolveWikiLinkTargets_PathHint_BrokenStoresAsRoutePath(t *testing.T) {
+	ts, _, _ := setupTreeForLinksTest(t)
+
+	targets := resolveWikiLinkTargets(ts, []string{"docs/nonexistent"})
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(targets))
+	}
+	if !targets[0].Broken {
+		t.Errorf("expected broken link")
+	}
+	if IsWikilinkSentinel(targets[0].TargetPagePath) {
+		t.Errorf("path hint must not be stored as sentinel, got %q", targets[0].TargetPagePath)
+	}
+	want := "/docs/nonexistent"
+	if targets[0].TargetPagePath != want {
+		t.Errorf("TargetPagePath = %q, want %q", targets[0].TargetPagePath, want)
+	}
+}
+
+func TestLinkService_AmbiguousWikiLinksAppearAsBacklinksForAllMatchingPages(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	sourceIDPtr, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source failed: %v", err)
+	}
+	sourceID := *sourceIDPtr
+
+	firstKafkaIDPtr, err := ts.CreateNode("system", nil, "Kafka", "kafka", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode kafka failed: %v", err)
+	}
+	firstKafkaID := *firstKafkaIDPtr
+
+	sectionIDPtr, err := ts.CreateNode("system", nil, "Docs", "docs", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode docs failed: %v", err)
+	}
+	sectionID := *sectionIDPtr
+
+	secondKafkaIDPtr, err := ts.CreateNode("system", &sectionID, "Kafka", "kafka", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode docs/kafka failed: %v", err)
+	}
+	secondKafkaID := *secondKafkaIDPtr
+
+	sourcePage, err := ts.GetPage(sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source failed: %v", err)
+	}
+	if err := svc.UpdateLinksForPage(sourcePage, "See [[Kafka]] for details."); err != nil {
+		t.Fatalf("UpdateLinksForPage failed: %v", err)
+	}
+
+	firstBacklinks, err := svc.GetBacklinksForPage(firstKafkaID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage(first Kafka) failed: %v", err)
+	}
+	if firstBacklinks.Count != 1 {
+		t.Fatalf("expected 1 backlink for first Kafka, got %d: %#v", firstBacklinks.Count, firstBacklinks.Backlinks)
+	}
+	if firstBacklinks.Backlinks[0].FromPageID != sourceID {
+		t.Fatalf("first backlink FromPageID = %q, want %q", firstBacklinks.Backlinks[0].FromPageID, sourceID)
+	}
+	if firstBacklinks.Backlinks[0].ToPageID != firstKafkaID {
+		t.Fatalf("first backlink ToPageID = %q, want %q", firstBacklinks.Backlinks[0].ToPageID, firstKafkaID)
+	}
+	if firstBacklinks.Backlinks[0].Broken {
+		t.Fatalf("first backlink should not be marked broken")
+	}
+
+	secondBacklinks, err := svc.GetBacklinksForPage(secondKafkaID)
+	if err != nil {
+		t.Fatalf("GetBacklinksForPage(second Kafka) failed: %v", err)
+	}
+	if secondBacklinks.Count != 1 {
+		t.Fatalf("expected 1 backlink for second Kafka, got %d: %#v", secondBacklinks.Count, secondBacklinks.Backlinks)
+	}
+	if secondBacklinks.Backlinks[0].FromPageID != sourceID {
+		t.Fatalf("second backlink FromPageID = %q, want %q", secondBacklinks.Backlinks[0].FromPageID, sourceID)
+	}
+	if secondBacklinks.Backlinks[0].ToPageID != secondKafkaID {
+		t.Fatalf("second backlink ToPageID = %q, want %q", secondBacklinks.Backlinks[0].ToPageID, secondKafkaID)
+	}
+	if secondBacklinks.Backlinks[0].Broken {
+		t.Fatalf("second backlink should not be marked broken")
+	}
+}
+
+func TestLinkService_AmbiguousWikiLinksAreNotBrokenInSourceStatus(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	sourceIDPtr, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source failed: %v", err)
+	}
+	sourceID := *sourceIDPtr
+
+	_, err = ts.CreateNode("system", nil, "Kafka", "kafka", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode kafka failed: %v", err)
+	}
+
+	sectionIDPtr, err := ts.CreateNode("system", nil, "Docs", "docs", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode docs failed: %v", err)
+	}
+	sectionID := *sectionIDPtr
+
+	_, err = ts.CreateNode("system", &sectionID, "Kafka", "kafka", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode docs/kafka failed: %v", err)
+	}
+
+	sourcePage, err := ts.GetPage(sourceID)
+	if err != nil {
+		t.Fatalf("GetPage source failed: %v", err)
+	}
+	if err := svc.UpdateLinksForPage(sourcePage, "See [[Kafka]] for details."); err != nil {
+		t.Fatalf("UpdateLinksForPage failed: %v", err)
+	}
+
+	status, err := svc.GetLinkStatusForPage(sourceID, "/source")
+	if err != nil {
+		t.Fatalf("GetLinkStatusForPage failed: %v", err)
+	}
+	if status.Counts.Outgoings != 1 {
+		t.Fatalf("expected 1 outgoing, got %d: %#v", status.Counts.Outgoings, status)
+	}
+	if status.Counts.BrokenOutgoings != 0 {
+		t.Fatalf("expected 0 broken outgoings for ambiguous wikilink, got %d: %#v", status.Counts.BrokenOutgoings, status.BrokenOutgoings)
+	}
+	if len(status.BrokenOutgoings) != 0 {
+		t.Fatalf("expected no broken outgoings, got %#v", status.BrokenOutgoings)
+	}
+	if len(status.Outgoings) != 1 {
+		t.Fatalf("expected 1 outgoing entry, got %#v", status.Outgoings)
+	}
+	if status.Outgoings[0].Broken {
+		t.Fatalf("ambiguous wikilink outgoing should not be marked broken in status")
+	}
+	if status.Outgoings[0].ToPath != "Kafka" {
+		t.Fatalf("ToPath = %q, want %q", status.Outgoings[0].ToPath, "Kafka")
+	}
+}
+
+// ─── HealWikiLinksForPage ambiguity guard ─────────────────────────────────────
+
+// Gap 3: when N>1 pages share a title, HealWikiLinksForPage must not heal
+// broken [[Title]] sentinels, because the link is still ambiguous.
+func TestLinkService_HealWikiLinksForPage_DoesNotHealWhenAmbiguous(t *testing.T) {
+	svc, ts, _ := setupLinkService(t)
+
+	// Two "Kafka" pages already exist.
+	kafka1IDPtr, err := ts.CreateNode("system", nil, "Kafka", "kafka1", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode kafka1: %v", err)
+	}
+	kafka2IDPtr, err := ts.CreateNode("system", nil, "Kafka", "kafka2", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode kafka2: %v", err)
+	}
+	_ = kafka1IDPtr
+
+	// Source page writes [[Kafka]] while two matches exist → sentinel broken=1.
+	sourceIDPtr, err := ts.CreateNode("system", nil, "Source", "source", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode source: %v", err)
+	}
+	sourcePage, err := ts.GetPage(*sourceIDPtr)
+	if err != nil {
+		t.Fatalf("GetPage source: %v", err)
+	}
+	if err := svc.UpdateLinksForPage(sourcePage, "See [[Kafka]]."); err != nil {
+		t.Fatalf("UpdateLinksForPage: %v", err)
+	}
+
+	out, err := svc.GetOutgoingLinksForPage(*sourceIDPtr)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage: %v", err)
+	}
+	if out.Count != 1 || !out.Outgoings[0].Broken {
+		t.Fatalf("precondition: expected [[Kafka]] to be a broken sentinel with 2 pages, got %+v", out)
+	}
+
+	// Create a third "Kafka" page and call HealWikiLinksForPage for it.
+	// The sentinel must stay broken because 3 pages share the title.
+	kafka3IDPtr, err := ts.CreateNode("system", nil, "Kafka", "kafka3", pageNodeKind())
+	if err != nil {
+		t.Fatalf("CreateNode kafka3: %v", err)
+	}
+	kafka3, err := ts.GetPage(*kafka3IDPtr)
+	if err != nil {
+		t.Fatalf("GetPage kafka3: %v", err)
+	}
+	_ = kafka2IDPtr
+	if err := svc.HealWikiLinksForPage(kafka3); err != nil {
+		t.Fatalf("HealWikiLinksForPage: %v", err)
+	}
+
+	out, err = svc.GetOutgoingLinksForPage(*sourceIDPtr)
+	if err != nil {
+		t.Fatalf("GetOutgoingLinksForPage after heal attempt: %v", err)
+	}
+	if out.Count != 1 {
+		t.Fatalf("expected 1 outgoing, got %d", out.Count)
+	}
+	if !out.Outgoings[0].Broken {
+		t.Fatalf("[[Kafka]] should remain broken/ambiguous after 3rd Kafka page created, but was healed to %q", out.Outgoings[0].ToPath)
+	}
+}

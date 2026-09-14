@@ -1,0 +1,350 @@
+package auth
+
+import (
+	"database/sql"
+	"errors"
+	"github.com/kawaiiwiki/komachi/backend/internal/storage/postgres"
+	"strings"
+	"sync"
+	"time"
+
+	sharederrors "github.com/kawaiiwiki/komachi/backend/internal/core/shared/errors"
+	_ "modernc.org/sqlite"
+)
+
+// APIKey is the persisted representation of an API key. The plaintext secret
+// is never stored — only KeyHash (a SHA-256 hash of the secret half of the
+// token) is kept, so a leaked database yields no usable keys.
+type APIKey struct {
+	ID         string
+	Name       string
+	UserID     string // the user this key belongs to and acts as
+	Prefix     string // public, indexed lookup value
+	KeyHash    string // SHA-256 hash of the secret
+	Role       string // narrows UserID's role; never widens it
+	ExpiresAt  *time.Time
+	CreatedBy  string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+}
+
+// IsActive reports whether the key can currently be used: not revoked and,
+// if it has an expiry, not yet expired as of now.
+func (k *APIKey) IsActive(now time.Time) bool {
+	if k.RevokedAt != nil {
+		return false
+	}
+	if k.ExpiresAt != nil && !now.Before(*k.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+type APIKeyStore struct {
+	pg         *postgres.Store
+	tx         *sql.Tx
+	mu         sync.Mutex
+	storageDir string
+	filename   string
+	db         *sql.DB
+	// suspended is set by suspend() and makes withDB refuse to lazily reopen
+	// db — see suspend's doc comment.
+	suspended bool
+}
+
+func NewAPIKeyStore(storageDir string) (*APIKeyStore, error) {
+	s := &APIKeyStore{
+		storageDir: storageDir,
+		filename:   "api_keys.db",
+	}
+
+	if err := s.ensureSchema(); err != nil {
+		return nil, err
+	}
+
+	return s, nil
+}
+
+func (s *APIKeyStore) withDB(fn func(db *sql.DB) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.suspended {
+		return errAPIKeyStoreUnavailable()
+	}
+
+	if s.db == nil && s.pg != nil {
+		s.db = s.pg.SQLDB()
+	}
+	if s.db == nil {
+		db, err := sql.Open("sqlite", databasePath(s.storageDir, s.filename)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+		if err != nil {
+			return err
+		}
+		s.db = db
+	}
+
+	return fn(s.db)
+}
+
+// suspend closes db (if open) and marks the store so withDB refuses to
+// lazily reopen it — unlike a plain Close(), whose reconnect-on-next-query
+// behavior would otherwise defeat the point of suspending. Used by
+// APIKeyService.PauseForSwap before a live restore renames api_keys.db out
+// from under this store: on Windows, an open file handle (or one silently
+// reopened by a query landing mid-swap) blocks the rename with a sharing
+// violation, which POSIX doesn't have. Mirrors UserStore.suspend exactly —
+// see that doc comment for the full rationale. suspend is permanent for this
+// *APIKeyStore instance; restore always continues with a brand new one
+// afterward (see APIKeyService.Replace), so there's no un-suspend. Idempotent:
+// a second call is a safe no-op.
+func (s *APIKeyStore) suspend() error {
+	if s.pg != nil {
+		return errors.New("legacy workspace restore cannot replace PostgreSQL authentication")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.suspended = true
+	if s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
+}
+
+// ErrCodeAPIKeyStoreUnavailable identifies errAPIKeyStoreUnavailable's
+// LocalizedError so callers (e.g. APIKeyService.AsStoreUnavailableErr, or the
+// wiki/apikeys HTTP layer's status mapping) can pass it through instead of
+// collapsing it into ErrAPIKeyInvalid. Exported — the sole source of truth
+// for this code, so no other layer needs its own copy of the literal.
+// Mirrors userStoreUnavailableCode.
+const ErrCodeAPIKeyStoreUnavailable = "apikey_store_unavailable"
+
+// errAPIKeyStoreUnavailable is returned while the store is suspended for an
+// in-progress live restore (see APIKeyStore.suspend / APIKeyService.PauseForSwap).
+// A request landing in that window gets this immediately instead of racing a
+// reconnect against the file swap. Mirrors errUserStoreUnavailable.
+func errAPIKeyStoreUnavailable() error {
+	return sharederrors.NewLocalizedError(
+		ErrCodeAPIKeyStoreUnavailable,
+		"The server is restoring from a backup — please try again in a moment",
+		"api key store is suspended for an in-progress restore",
+		nil,
+	)
+}
+
+func (s *APIKeyStore) ensureSchema() error {
+	return s.withQueries(func(db postgres.SQLQueries) error {
+		_, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS api_keys (
+				id           TEXT PRIMARY KEY,
+				name         TEXT NOT NULL,
+				user_id      TEXT NOT NULL,
+				prefix       TEXT NOT NULL UNIQUE,
+				key_hash     TEXT NOT NULL,
+				role         TEXT NOT NULL,
+				expires_at   INTEGER,          -- unix sec, NULL = never expires
+				created_by   TEXT NOT NULL,
+				created_at   INTEGER NOT NULL, -- unix sec
+				last_used_at INTEGER,          -- unix sec, NULL = never used
+				revoked_at   INTEGER           -- unix sec, NULL = active
+			);
+		`)
+		return err
+	})
+}
+
+func (s *APIKeyStore) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			return err
+		}
+		s.db = nil
+	}
+	return nil
+}
+
+func (s *APIKeyStore) CreateAPIKey(key *APIKey) error {
+	return s.withQueries(func(db postgres.SQLQueries) error {
+		_, err := db.Exec(`
+			INSERT INTO api_keys (id, name, user_id, prefix, key_hash, role, expires_at, created_by, created_at, last_used_at, revoked_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+		`, key.ID, key.Name, key.UserID, key.Prefix, key.KeyHash, key.Role,
+			timeToNullInt64(key.ExpiresAt), key.CreatedBy, key.CreatedAt.Unix(),
+			timeToNullInt64(key.LastUsedAt), timeToNullInt64(key.RevokedAt))
+		if err != nil {
+			return s.mapConstraintViolationToError(err)
+		}
+		return nil
+	})
+}
+
+func (s *APIKeyStore) GetByPrefix(prefix string) (*APIKey, error) {
+	var key *APIKey
+	err := s.withQueries(func(db postgres.SQLQueries) error {
+		row := db.QueryRow(`
+			SELECT id, name, user_id, prefix, key_hash, role, expires_at, created_by, created_at, last_used_at, revoked_at
+			FROM api_keys
+			WHERE prefix = $1;
+		`, prefix)
+		var scanErr error
+		key, scanErr = scanAPIKey(row)
+		return scanErr
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrAPIKeyNotFound
+		}
+		return nil, err
+	}
+	return key, nil
+}
+
+func (s *APIKeyStore) GetByID(id string) (*APIKey, error) {
+	var key *APIKey
+	err := s.withQueries(func(db postgres.SQLQueries) error {
+		row := db.QueryRow(`
+			SELECT id, name, user_id, prefix, key_hash, role, expires_at, created_by, created_at, last_used_at, revoked_at
+			FROM api_keys
+			WHERE id = $1;
+		`, id)
+		var scanErr error
+		key, scanErr = scanAPIKey(row)
+		return scanErr
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrAPIKeyNotFound
+		}
+		return nil, err
+	}
+	return key, nil
+}
+
+func (s *APIKeyStore) ListAll() ([]*APIKey, error) {
+	var keys []*APIKey
+	err := s.withQueries(func(db postgres.SQLQueries) error {
+		rows, err := db.Query(`
+			SELECT id, name, user_id, prefix, key_hash, role, expires_at, created_by, created_at, last_used_at, revoked_at
+			FROM api_keys
+			ORDER BY created_at DESC;
+		`)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }()
+
+		for rows.Next() {
+			key, err := scanAPIKey(rows)
+			if err != nil {
+				return err
+			}
+			keys = append(keys, key)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// Revoke marks a key as revoked, effective immediately. Revoking an
+// already-revoked key is a no-op (the original revocation time is kept).
+// Returns ErrAPIKeyNotFound if no key with this id exists.
+func (s *APIKeyStore) Revoke(id string) error {
+	if _, err := s.GetByID(id); err != nil {
+		return err
+	}
+	return s.withQueries(func(db postgres.SQLQueries) error {
+		_, err := db.Exec(`
+			UPDATE api_keys
+			SET revoked_at = $1
+			WHERE id = $2 AND revoked_at IS NULL;
+		`, time.Now().Unix(), id)
+		return err
+	})
+}
+
+// DeleteAllForUser removes every API key owned by userID. Called on user
+// delete — the key is already unusable for auth immediately once its owner
+// is gone (APIKeyService.Resolve re-validates the owner on every use), so
+// this is orphaned-row hygiene rather than a security-critical revocation.
+func (s *APIKeyStore) DeleteAllForUser(userID string) error {
+	return s.withQueries(func(db postgres.SQLQueries) error {
+		_, err := db.Exec(`DELETE FROM api_keys WHERE user_id = $1;`, userID)
+		return err
+	})
+}
+
+// TouchLastUsed records that a key was just used. Throttling (to avoid a
+// write on every request) is the caller's responsibility.
+func (s *APIKeyStore) TouchLastUsed(id string, at time.Time) error {
+	return s.withQueries(func(db postgres.SQLQueries) error {
+		_, err := db.Exec(`
+			UPDATE api_keys
+			SET last_used_at = $1
+			WHERE id = $2;
+		`, at.Unix(), id)
+		return err
+	})
+}
+
+func (s *APIKeyStore) mapConstraintViolationToError(err error) error {
+	if uniqueConstraint(err, "api_keys_prefix_key") {
+		return ErrAPIKeyPrefixCollision
+	}
+	if strings.Contains(err.Error(), "UNIQUE constraint failed: api_keys.prefix") {
+		return ErrAPIKeyPrefixCollision
+	}
+	return err
+}
+
+// rowScanner abstracts over *sql.Row and *sql.Rows so scanAPIKey can serve both.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAPIKey(row rowScanner) (*APIKey, error) {
+	key := &APIKey{}
+	var expiresAt, lastUsedAt, revokedAt sql.NullInt64
+	var createdAt int64
+
+	if err := row.Scan(&key.ID, &key.Name, &key.UserID, &key.Prefix, &key.KeyHash, &key.Role,
+		&expiresAt, &key.CreatedBy, &createdAt, &lastUsedAt, &revokedAt); err != nil {
+		return nil, err
+	}
+
+	key.CreatedAt = time.Unix(createdAt, 0)
+	key.ExpiresAt = nullInt64ToTime(expiresAt)
+	key.LastUsedAt = nullInt64ToTime(lastUsedAt)
+	key.RevokedAt = nullInt64ToTime(revokedAt)
+	return key, nil
+}
+
+func timeToNullInt64(t *time.Time) sql.NullInt64 {
+	if t == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: t.Unix(), Valid: true}
+}
+
+func nullInt64ToTime(v sql.NullInt64) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	t := time.Unix(v.Int64, 0)
+	return &t
+}
+
+func (s *APIKeyStore) withQueries(fn func(postgres.SQLQueries) error) error {
+	if s.tx != nil {
+		return fn(s.tx)
+	}
+	return s.withDB(func(db *sql.DB) error { return fn(db) })
+}

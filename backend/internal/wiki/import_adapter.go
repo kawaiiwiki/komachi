@@ -1,0 +1,115 @@
+package wiki
+
+import (
+	"context"
+	"log/slog"
+	"mime/multipart"
+
+	"github.com/kawaiiwiki/komachi/backend/internal/core/assets"
+	"github.com/kawaiiwiki/komachi/backend/internal/core/revision"
+	"github.com/kawaiiwiki/komachi/backend/internal/core/tree"
+	"github.com/kawaiiwiki/komachi/backend/internal/links"
+	"github.com/kawaiiwiki/komachi/backend/internal/properties"
+	"github.com/kawaiiwiki/komachi/backend/internal/search"
+	"github.com/kawaiiwiki/komachi/backend/internal/tags"
+	wikiassets "github.com/kawaiiwiki/komachi/backend/internal/wiki/assets"
+	wikipages "github.com/kawaiiwiki/komachi/backend/internal/wiki/pages"
+	"github.com/kawaiiwiki/komachi/backend/internal/wiki/pagesave"
+)
+
+// WikiImportAdapter implements the importer.ImporterWiki interface using
+// the wiki's internal services directly via use cases.
+type WikiImportAdapter struct {
+	tree        *tree.TreeService
+	slug        *tree.SlugService
+	revision    *revision.Service
+	links       *links.LinkService
+	asset       *assets.AssetService
+	tags        *tags.TagsService
+	props       *properties.PropertiesService
+	searchIndex search.Index
+	log         *slog.Logger
+}
+
+// NewWikiImportAdapter constructs an importer adapter backed by the wiki's
+// internal services.
+func NewWikiImportAdapter(w *Wiki) *WikiImportAdapter {
+	return &WikiImportAdapter{
+		tree:        w.tree,
+		slug:        w.slug,
+		revision:    w.revision,
+		links:       w.links,
+		asset:       w.asset,
+		tags:        w.tags,
+		props:       w.props,
+		searchIndex: w.searchIndex,
+		log:         w.log,
+	}
+}
+
+func (a *WikiImportAdapter) TreeHash() string {
+	return a.tree.TreeHash()
+}
+
+func (a *WikiImportAdapter) LookupPagePath(path string) (*tree.PathLookup, error) {
+	return a.tree.LookupPagePath(path)
+}
+
+func (a *WikiImportAdapter) FindByPath(route string) (*tree.Page, error) {
+	return a.tree.FindPageByRoutePath(route)
+}
+
+func (a *WikiImportAdapter) ListAssets(pageID string) ([]string, error) {
+	page, err := a.tree.FindPageByID(pageID)
+	if err != nil {
+		return nil, err
+	}
+	return a.asset.ListAssetsForPage(page)
+}
+
+func (a *WikiImportAdapter) orchestrator() *pagesave.PageSaveOrchestrator {
+	return pagesave.NewPageSaveOrchestrator(nil,
+		pagesave.NewSearchIndexSideEffect(a.searchIndex, a.tree, a.log, nil),
+		pagesave.NewLinkIndexSideEffect(a.links, a.log, nil),
+		pagesave.NewTagsSideEffect(a.tags, a.log, nil),
+		pagesave.NewPropertiesSideEffect(a.props, a.log, nil),
+		pagesave.NewRevisionSideEffect(a.revision, a.log, nil),
+	)
+}
+
+func (a *WikiImportAdapter) EnsurePath(userID, targetPath, title string, kind *tree.NodeKind) (*tree.Page, error) {
+	out, err := wikipages.NewEnsurePathUseCase(a.tree, a.slug, a.orchestrator(), a.log).Execute(
+		context.Background(),
+		wikipages.EnsurePathInput{UserID: userID, TargetPath: targetPath, TargetTitle: title, Kind: kind},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return out.Page, nil
+}
+
+func (a *WikiImportAdapter) UpdatePage(userID, id, title, slug string, content *string, kind *tree.NodeKind) (*tree.Page, error) {
+	current, err := a.tree.GetPage(id)
+	if err != nil {
+		return nil, err
+	}
+	out, err := wikipages.NewUpdatePageUseCase(a.tree, a.slug, a.orchestrator(), a.log, nil).Execute(
+		context.Background(),
+		wikipages.UpdatePageInput{UserID: userID, ID: id, Version: current.Version(), Title: title, Slug: slug, Content: content, Kind: kind, PreserveFrontmatter: true},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return out.Page, nil
+}
+
+func (a *WikiImportAdapter) UploadAsset(userID, pageID string, file multipart.File, filename string, maxBytes int64) (string, error) {
+	out, err := wikiassets.NewUploadAssetUseCase(a.tree, a.asset, a.revision, a.log).Execute(
+		context.Background(),
+		wikiassets.UploadAssetInput{UserID: userID, PageID: pageID, File: file, Filename: filename, MaxBytes: maxBytes},
+	)
+	if err != nil {
+		return "", err
+	}
+	return out.URL, nil
+}

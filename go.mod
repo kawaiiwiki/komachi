@@ -1,4 +1,4 @@
-module github.com/perber/wiki
+module github.com/kawaiiwiki/komachi
 
 go 1.26.0
 

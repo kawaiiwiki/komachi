@@ -1,0 +1,105 @@
+package search
+
+import (
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	coreauth "github.com/kawaiiwiki/komachi/backend/internal/core/auth"
+	httpinternal "github.com/kawaiiwiki/komachi/backend/internal/http"
+)
+
+// Routes is the RouteRegistrar for the search domain.
+type Routes struct {
+	search            *SearchUseCase
+	getIndexingStatus *GetIndexingStatusUseCase
+	authService       *coreauth.AuthService
+}
+
+// RoutesConfig holds the dependencies required to build a Routes instance.
+type RoutesConfig struct {
+	Search            *SearchUseCase
+	GetIndexingStatus *GetIndexingStatusUseCase
+	AuthService       *coreauth.AuthService
+}
+
+// NewRoutes constructs the search RouteRegistrar.
+func NewRoutes(cfg RoutesConfig) *Routes {
+	return &Routes{
+		search:            cfg.Search,
+		getIndexingStatus: cfg.GetIndexingStatus,
+		authService:       cfg.AuthService,
+	}
+}
+
+// RegisterRoutes implements RouteRegistrar.
+func (r *Routes) RegisterRoutes(ctx httpinternal.RouterContext) {
+	// Registered once, gated per request so these reads can flip between
+	// authenticated-only and public without a restart (see APIReadGroup).
+	readGroup := ctx.APIReadGroup(r.authService)
+	readGroup.GET("/search/status", r.handleGetIndexingStatus)
+	readGroup.GET("/search", r.handleSearch)
+}
+
+// ─── Handlers ───────────────────────────────────────────────────────────────
+
+func (r *Routes) handleSearch(c *gin.Context) {
+	query := c.Query("q")
+	tags := queryTags(c, "tags")
+	if query == "" && len(tags) == 0 {
+		respondWithSearchStatusError(c, http.StatusBadRequest, ErrCodeSearchMissingQuery, "Query parameter 'q' is required", "query parameter q is required")
+		return
+	}
+
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "20")
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		respondWithSearchStatusError(c, http.StatusBadRequest, ErrCodeSearchInvalidOffset, "Invalid offset value", "invalid offset value")
+		return
+	}
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		respondWithSearchStatusError(c, http.StatusBadRequest, ErrCodeSearchInvalidLimit, "Invalid limit value", "invalid limit value")
+		return
+	}
+
+	out, err := r.search.Execute(c.Request.Context(), SearchInput{Query: query, Tags: tags, Offset: offset, Limit: limit})
+	if err != nil {
+		respondWithSearchError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out.Result)
+}
+
+func (r *Routes) handleGetIndexingStatus(c *gin.Context) {
+	out := r.getIndexingStatus.Execute(c.Request.Context())
+	c.JSON(http.StatusOK, out.Status)
+}
+
+func splitTags(raw string) []string {
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		tag := strings.TrimSpace(p)
+		if tag != "" {
+			result = append(result, tag)
+		}
+	}
+	return result
+}
+
+func queryTags(c *gin.Context, key string) []string {
+	values := c.QueryArray(key)
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, splitTags(value)...)
+	}
+	return result
+}

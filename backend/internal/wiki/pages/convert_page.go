@@ -1,0 +1,58 @@
+package pages
+
+import (
+	"context"
+	"log/slog"
+
+	"github.com/kawaiiwiki/komachi/backend/internal/core/revision"
+	"github.com/kawaiiwiki/komachi/backend/internal/core/tree"
+)
+
+// ConvertPageInput is the input for ConvertPageUseCase.
+type ConvertPageInput struct {
+	UserID     string
+	ID         string
+	Version    string
+	TargetKind tree.NodeKind
+}
+
+// ConvertPageUseCase converts a page to a different node kind (page ↔ section).
+type ConvertPageUseCase struct {
+	tree     *tree.TreeService
+	revision *revision.Service
+	log      *slog.Logger
+}
+
+// NewConvertPageUseCase constructs a ConvertPageUseCase.
+func NewConvertPageUseCase(t *tree.TreeService, r *revision.Service, log *slog.Logger) *ConvertPageUseCase {
+	return &ConvertPageUseCase{tree: t, revision: r, log: log}
+}
+
+// Execute converts the node kind and records a structure revision.
+func (uc *ConvertPageUseCase) Execute(ctx context.Context, in ConvertPageInput) error {
+	if uc.tree.UsesPostgres() {
+		return uc.tree.Transact(ctx, func(local *tree.TreeService) error {
+			copy := *uc
+			copy.tree = local
+			copy.revision = uc.revision.Bind(local)
+			return copy.Execute(ctx, in)
+		})
+	}
+
+	if in.ID == "root" || in.ID == "" {
+		return newPageRootOperationError("convert")
+	}
+	in.Version = sanitizeClientVersion(in.Version)
+	if err := uc.tree.ConvertNode(in.UserID, in.ID, in.TargetKind, in.Version); err != nil {
+		return err
+	}
+	if uc.revision != nil {
+		if _, _, err := uc.revision.RecordStructureChange(in.ID, in.UserID, ""); err != nil {
+			if _, db := uc.tree.TransactionDB(); db != nil {
+				return err
+			}
+			uc.log.Warn("failed to record structure revision", "pageID", in.ID, "error", err)
+		}
+	}
+	return nil
+}
