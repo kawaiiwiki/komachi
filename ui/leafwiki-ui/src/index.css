@@ -79,9 +79,6 @@
   --color-headline-anchor-icon: hsl(var(--headline-anchor-icon));
   --color-headline-anchor-icon-hover: hsl(var(--headline-anchor-icon-hover));
 
-  --color-avatar-bg: hsl(var(--avatar-bg));
-  --color-avatar-foreground: hsl(var(--avatar-foreground));
-
   --color-tree-node-hover: hsl(var(--tree-node-hover));
 }
 
@@ -159,9 +156,6 @@
     --headline-anchor-icon: 215 20% 65%;
     --headline-anchor-icon-hover: 217 33% 17%;
 
-    --avatar-bg: 214 20% 89%;
-    --avatar-foreground: 215 25% 27%;
-
     --tree-node-hover: 213 34% 94%;
     --scrollbar-thumb: 214 20% 75%;
     --scrollbar-thumb-hover: 214 20% 85%;
@@ -236,10 +230,6 @@
 
     --headline-anchor-icon: 220 12% 65%;
     --headline-anchor-icon-hover: 210 20% 96%;
-
-    /* ---- AVATAR ---- */
-    --avatar-bg: 222 16% 22%;
-    --avatar-foreground: 210 20% 96%;
 
     /* ---- TREE / SIDEBAR HOVER ---- */
     --tree-node-hover: 222 18% 18%;
@@ -701,16 +691,8 @@
     @apply ml-auto flex items-center gap-4;
   }
 
-  .user-menu__avatar {
-    @apply h-5 w-5 max-sm:h-7 max-sm:w-7;
-  }
-
-  .user-menu__avatar > span {
-    @apply bg-avatar-bg! text-avatar-foreground!;
-  }
-
-  .user-menu__avatar-fallback {
-    @apply text-muted-foreground font-medium;
+  .user-menu__username {
+    @apply block max-w-48 truncate text-sm font-medium max-sm:max-w-28;
   }
 
   .user-menu__not-logged-in {
@@ -3788,9 +3770,6 @@
 
       --headline-anchor-icon: 215 20% 65% !important;
       --headline-anchor-icon-hover: 217 33% 17% !important;
-
-      --avatar-bg: 214 20% 89% !important;
-      --avatar-foreground: 215 25% 27% !important;
 
       --tree-node-hover: 213 34% 94% !important;
       --scrollbar-thumb: 214 20% 75% !important;

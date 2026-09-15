@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	coreavatar "github.com/kawaiiwiki/komachi/backend/internal/avatar"
 	coreauth "github.com/kawaiiwiki/komachi/backend/internal/core/auth"
 	httpinternal "github.com/kawaiiwiki/komachi/backend/internal/http"
 	authmw "github.com/kawaiiwiki/komachi/backend/internal/http/middleware/auth"
@@ -208,23 +207,17 @@ func (r *Routes) handleConfig(ctx httpinternal.RouterContext) gin.HandlerFunc {
 			"authDisabled":            opts.AuthDisabled,
 			"basePath":                opts.BasePath,
 			"maxAssetUploadSizeBytes": opts.MaxAssetUploadSizeBytes,
-			// Avatar constraints are fixed feature constants (internal/avatar),
-			// not a configurable RouterOptions field like MaxAssetUploadSizeBytes
-			// above — read straight from the package rather than plumbed through
-			// Opts, since there's no flag/env var that could ever override them.
-			"maxAvatarUploadSizeBytes": coreavatar.MaxUploadSize,
-			"avatarAllowedExts":        coreavatar.AllowedExts(),
-			"enableRevision":           opts.EnableRevision,
-			"enableLinkRefactor":       opts.EnableLinkRefactor,
-			"enableApiKeyManagement":   opts.EnableAPIKeyManagement,
-			"snapshotEnabled":          opts.SnapshotEnabled,
-			"smtpEnabled":              opts.SMTPEnabled,
-			"totpAvailable":            opts.TOTPAvailable,
-			"httpRemoteUserEnabled":    opts.HTTPRemoteUser.Enabled,
-			"loginUrl":                 opts.LoginURL,
-			"logoutUrl":                opts.LogoutURL,
-			"userManagementUrl":        opts.UserManagementURL,
-			"defaultLanguage":          opts.DefaultLanguage,
+			"enableRevision":          opts.EnableRevision,
+			"enableLinkRefactor":      opts.EnableLinkRefactor,
+			"enableApiKeyManagement":  opts.EnableAPIKeyManagement,
+			"snapshotEnabled":         opts.SnapshotEnabled,
+			"smtpEnabled":             opts.SMTPEnabled,
+			"totpAvailable":           opts.TOTPAvailable,
+			"httpRemoteUserEnabled":   opts.HTTPRemoteUser.Enabled,
+			"loginUrl":                opts.LoginURL,
+			"logoutUrl":               opts.LogoutURL,
+			"userManagementUrl":       opts.UserManagementURL,
+			"defaultLanguage":         opts.DefaultLanguage,
 		})
 	}
 }

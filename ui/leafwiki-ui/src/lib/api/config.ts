@@ -22,8 +22,6 @@ export type Config = {
   hideLinkMetadataSection: boolean
   authDisabled: boolean
   maxAssetUploadSizeBytes: number
-  maxAvatarUploadSizeBytes: number
-  avatarAllowedExts: string[]
   enableRevision: boolean
   enableLinkRefactor: boolean
   enableApiKeyManagement: boolean

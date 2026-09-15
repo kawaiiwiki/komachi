@@ -39,6 +39,19 @@ describe('UserMenu', () => {
     })
   })
 
+  it('shows the full username instead of a profile image', () => {
+    render(
+      <MemoryRouter>
+        <UserMenu />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('button', { name: 'alice' })).toHaveTextContent(
+      'alice',
+    )
+    expect(document.querySelector('img')).not.toBeInTheDocument()
+  })
+
   it('navigates to /settings when the Settings item is clicked', async () => {
     const user = userEvent.setup({ delay: null })
 
@@ -54,8 +67,10 @@ describe('UserMenu', () => {
       </MemoryRouter>,
     )
 
-    const avatar = screen.getByTestId('user-menu-avatar')
-    await user.click(avatar.closest('button') as HTMLButtonElement)
+    const triggerButton = screen.getByRole('button', {
+      name: useSessionStore.getState().user!.username,
+    })
+    await user.click(triggerButton as HTMLButtonElement)
     await user.click(screen.getByTestId('user-menu-settings'))
 
     await waitFor(() => {
@@ -73,8 +88,10 @@ describe('UserMenu', () => {
       </MemoryRouter>,
     )
 
-    const avatar = screen.getByTestId('user-menu-avatar')
-    const trigger = avatar.closest('button')
+    const triggerButton = screen.getByRole('button', {
+      name: useSessionStore.getState().user!.username,
+    })
+    const trigger = triggerButton
 
     expect(trigger).toBeTruthy()
     await user.click(trigger as HTMLButtonElement)
@@ -147,8 +164,10 @@ describe('UserMenu', () => {
         </MemoryRouter>,
       )
 
-      const avatar = screen.getByTestId('user-menu-avatar')
-      const trigger = avatar.closest('button')
+      const triggerButton = screen.getByRole('button', {
+        name: useSessionStore.getState().user!.username,
+      })
+      const trigger = triggerButton
       await user.click(trigger as HTMLButtonElement)
 
       expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument()
@@ -163,8 +182,10 @@ describe('UserMenu', () => {
         </MemoryRouter>,
       )
 
-      const avatar = screen.getByTestId('user-menu-avatar')
-      await user.click(avatar.closest('button') as HTMLButtonElement)
+      const triggerButton = screen.getByRole('button', {
+        name: useSessionStore.getState().user!.username,
+      })
+      await user.click(triggerButton as HTMLButtonElement)
 
       expect(screen.getByTestId('user-menu-settings')).toBeInTheDocument()
     })
@@ -227,8 +248,10 @@ describe('UserMenu', () => {
 
       renderWithLoginRoute()
 
-      const avatar = screen.getByTestId('user-menu-avatar')
-      await user.click(avatar.closest('button') as HTMLButtonElement)
+      const triggerButton = screen.getByRole('button', {
+        name: useSessionStore.getState().user!.username,
+      })
+      await user.click(triggerButton as HTMLButtonElement)
       await user.click(screen.getByTestId('user-menu-logout'))
 
       expect(logoutSpy).toHaveBeenCalled()
@@ -246,8 +269,10 @@ describe('UserMenu', () => {
 
       renderWithLoginRoute()
 
-      const avatar = screen.getByTestId('user-menu-avatar')
-      await user.click(avatar.closest('button') as HTMLButtonElement)
+      const triggerButton = screen.getByRole('button', {
+        name: useSessionStore.getState().user!.username,
+      })
+      await user.click(triggerButton as HTMLButtonElement)
       await user.click(screen.getByTestId('user-menu-logout'))
 
       await waitFor(() => {

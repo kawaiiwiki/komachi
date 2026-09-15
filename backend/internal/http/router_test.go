@@ -5140,3 +5140,27 @@ func TestBuildCustomStylesheetTag_WhitespacePath(t *testing.T) {
 		t.Fatalf("expected empty tag for whitespace path, got %q", tag)
 	}
 }
+
+func TestAvatarFeatureRemoved(t *testing.T) {
+	w := createWikiTestInstance(t)
+	router := createRouterTestInstance(w, t)
+	for _, route := range router.Routes() {
+		if route.Path == "/api/user/avatar" || strings.HasPrefix(route.Path, "/avatars/") {
+			t.Errorf("avatar route still registered: %s %s", route.Method, route.Path)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("config status: %d", recorder.Code)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &config); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"maxAvatarUploadSizeBytes", "avatarAllowedExts"} {
+		if _, exists := config[key]; exists {
+			t.Errorf("avatar setting still exposed: %s", key)
+		}
+	}
+}
