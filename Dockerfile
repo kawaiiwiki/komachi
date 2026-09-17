@@ -2,9 +2,9 @@
 FROM node:26-alpine@sha256:725aeba2364a9b16beae49e180d83bd597dbd0b15c47f1f28875c290bfd255b9 AS frontend-build
 WORKDIR /app
 ARG APP_VERSION
-COPY ./ui/leafwiki-ui/package*.json ./
+COPY ./frontend/package*.json ./
 RUN npm ci --ignore-scripts
-COPY ./ui/leafwiki-ui/ ./
+COPY ./frontend/ ./
 RUN VITE_API_URL=/ APP_VERSION=${APP_VERSION} npm run build
 
 # Step 2: Backend + Build binary

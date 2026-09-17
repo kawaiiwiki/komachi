@@ -1,0 +1,46 @@
+import { memo, useRef, useState } from 'react'
+import { useTranslation } from '../../../node_modules/react-i18next'
+import { useMermaidInjector } from './useMermaidInjector'
+
+export default memo(function MermaidBlock({
+  code,
+  dataLine,
+  theme,
+}: {
+  code: string
+  dataLine?: string
+  theme: 'default' | 'dark'
+}) {
+  const { t } = useTranslation('viewer')
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  useMermaidInjector({
+    containerRef,
+    code,
+    dataLine,
+    theme,
+    onError: setErrorMessage,
+  })
+
+  if (errorMessage) {
+    return (
+      <div
+        ref={containerRef}
+        className="border-destructive/40 bg-destructive/5 my-4 max-w-full rounded-md border p-4 whitespace-normal"
+      >
+        <p className="text-destructive text-sm font-medium">
+          {t('mermaid.renderError')}
+        </p>
+        <p className="text-muted-foreground mt-2 pr-12 text-sm break-words">
+          {errorMessage}
+        </p>
+        <pre className="bg-muted mt-3 overflow-x-auto rounded-md p-3 text-sm">
+          <code>{code}</code>
+        </pre>
+      </div>
+    )
+  }
+
+  return <div ref={containerRef} className="my-4" />
+})

@@ -1,0 +1,94 @@
+import { Button } from '@/components/ui/button'
+import { lookupPath } from '@/lib/api/pages'
+import { DIALOG_CREATE_PAGE_BY_PATH } from '@/lib/registries'
+import { useIsReadOnly } from '@/lib/useIsReadOnly'
+import { useDialogsStore } from '@/stores/dialogs'
+import { useEffect, useState } from 'react'
+import { useTranslation } from '../../node_modules/react-i18next'
+
+type Page404Props = {
+  targetPath?: string
+  allowCreate?: boolean
+}
+
+export default function Page404({
+  targetPath,
+  allowCreate = false,
+}: Page404Props) {
+  const { t } = useTranslation('common')
+  const readOnlyMode = useIsReadOnly()
+  const openDialog = useDialogsStore((s) => s.openDialog)
+  const [lookupState, setLookupState] = useState<{
+    path: string | null
+    canCreate: boolean
+  }>({
+    path: null,
+    canCreate: false,
+  })
+
+  useEffect(() => {
+    if (!allowCreate || !targetPath) return
+
+    let active = true
+
+    const loadLookup = async () => {
+      try {
+        const lookup = await lookupPath(targetPath)
+        if (active) {
+          setLookupState({
+            path: targetPath,
+            canCreate: lookup.canCreate && !lookup.exists,
+          })
+        }
+      } catch {
+        if (active) {
+          setLookupState({
+            path: targetPath,
+            canCreate: false,
+          })
+        }
+      }
+    }
+
+    void loadLookup()
+
+    return () => {
+      active = false
+    }
+  }, [allowCreate, targetPath])
+
+  const showCreate =
+    Boolean(targetPath) &&
+    allowCreate &&
+    lookupState.path === targetPath &&
+    lookupState.canCreate &&
+    !readOnlyMode
+
+  return (
+    <div className="page404-shell">
+      <div className="page404" data-testid="page404">
+        <h1 className="page404__title">{t('page404.heading')}</h1>
+        <p className="page404__text">{t('page404.body')}</p>
+        {showCreate && (
+          <>
+            <p className="page404__text">{t('page404.createPrompt')}</p>
+            <Button
+              className="mt-4"
+              data-testid="page404-create-page-button"
+              onClick={() =>
+                openDialog(DIALOG_CREATE_PAGE_BY_PATH, {
+                  initialPath: targetPath,
+                  readOnlyPath: true,
+                  forwardToEditMode: true,
+                })
+              }
+              variant={'outline'}
+            >
+              {t('page404.createButton')}
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}

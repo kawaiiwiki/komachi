@@ -16,7 +16,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: ui/leafwiki-ui
+        working-directory: frontend
 
     steps:
       - name: Checkout code
@@ -40,7 +40,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           scan-type: fs
-          scan-ref: 'ui/leafwiki-ui'
+          scan-ref: 'frontend'
           trivyignores: '.trivyignore'
           severity: HIGH,CRITICAL
           ignore-unfixed: true
@@ -51,7 +51,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: ui/leafwiki-ui
+        working-directory: frontend
 
     steps:
       - name: Checkout code

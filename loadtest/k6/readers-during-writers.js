@@ -28,7 +28,7 @@
 //     only ~10ms per save — theory says this should barely degrade under
 //     writers.
 //   - 'content-links': GET /api/pages/:id + GET /api/pages/:id/links,
-//     replicating what a real page view actually does — ui/leafwiki-ui's
+//     replicating what a real page view actually does — frontend's
 //     PageViewer.tsx renders <BacklinkInfo /> on every successful view,
 //     which auto-fires the /links call alongside content (unless the admin
 //     set hideLinkMetadataSection, off by default). internal/links/links_store.go

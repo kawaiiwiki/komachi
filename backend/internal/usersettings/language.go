@@ -3,7 +3,7 @@ package usersettings
 import "sort"
 
 // allowedLanguages is the set of language codes UserSettings will accept.
-// Keep in sync with the locales shipped under ui/leafwiki-ui/src/locales/ —
+// Keep in sync with the locales shipped under frontend/src/locales/ —
 // extend here whenever a new one is added.
 var allowedLanguages = map[string]bool{
 	DefaultLanguage: true,

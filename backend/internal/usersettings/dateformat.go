@@ -4,7 +4,7 @@ import "sort"
 
 // allowedDateFormats is the set of date-format identifiers UserSettings will
 // accept. Keep in sync with the options offered by the Account → Preferences
-// picker in ui/leafwiki-ui. "locale" means "follow the active UI language".
+// picker in frontend. "locale" means "follow the active UI language".
 var allowedDateFormats = map[string]bool{
 	DefaultDateFormat: true, // locale
 	"iso":             true, // 2026-08-27

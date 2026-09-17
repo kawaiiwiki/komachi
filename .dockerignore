@@ -1,5 +1,5 @@
 # Node dependencies — installed fresh inside the container
-ui/leafwiki-ui/node_modules/
+frontend/node_modules/
 e2e/node_modules/
 
 # E2E tests and tooling

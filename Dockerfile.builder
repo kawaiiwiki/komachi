@@ -4,11 +4,11 @@ FROM node:26-alpine@sha256:725aeba2364a9b16beae49e180d83bd597dbd0b15c47f1f28875c
 WORKDIR /ui
 ARG APP_VERSION
 
-COPY ./ui/leafwiki-ui/package.json ./package.json
-COPY ./ui/leafwiki-ui/package-lock.json ./package-lock.json
+COPY ./frontend/package.json ./package.json
+COPY ./frontend/package-lock.json ./package-lock.json
 RUN npm ci --ignore-scripts
 
-COPY ./ui/leafwiki-ui/ ./
+COPY ./frontend/ ./
 RUN VITE_API_URL=/ APP_VERSION=${APP_VERSION} npm run build
 
 # Stage 2: Go backend build

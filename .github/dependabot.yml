@@ -47,7 +47,7 @@ updates:
 
   # Frontend (npm)
   - package-ecosystem: "npm"
-    directory: "/ui/leafwiki-ui"
+    directory: "/frontend"
     schedule:
       interval: "monthly"
     groups:

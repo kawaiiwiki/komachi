@@ -4,7 +4,7 @@ CMD_DIR=./cmd
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 RELEASE_DIR := releases
 DOCKER_BUILDER := Dockerfile.builder
-UI_DIR := ui/leafwiki-ui
+UI_DIR := frontend
 HTTP_DIST := backend/internal/http/dist
 EMBED_LDFLAGS := -X github.com/kawaiiwiki/komachi/backend/internal/http.EmbedFrontend=true -X github.com/kawaiiwiki/komachi/backend/internal/http.Environment=production
 LDFLAGS := -X main.Version=$(VERSION) $(EMBED_LDFLAGS)
