@@ -12,13 +12,14 @@ FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aab
 WORKDIR /app
 ARG APP_VERSION
 ARG DISABLE_REFRESH_TOKEN_RATE_LIMIT=false
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./backend/
+WORKDIR /app/backend
 RUN go mod download
-COPY . .
+COPY . ../
 COPY --from=frontend-build /app/dist ./internal/http/dist
 RUN CGO_ENABLED=0 go build \
-	-ldflags="-s -w -X github.com/perber/wiki/internal/http.EmbedFrontend=true -X github.com/perber/wiki/internal/http.Environment=production -X main.Version=${APP_VERSION} -X github.com/perber/wiki/internal/wiki/auth.DisableRefreshTokenRateLimit=${DISABLE_REFRESH_TOKEN_RATE_LIMIT}" \
-	-o /out/leafwiki ./cmd/leafwiki
+	-ldflags="-s -w -X github.com/kawaiiwiki/komachi/backend/internal/http.EmbedFrontend=true -X github.com/kawaiiwiki/komachi/backend/internal/http.Environment=production -X main.Version=${APP_VERSION} -X github.com/kawaiiwiki/komachi/backend/internal/wiki/auth.DisableRefreshTokenRateLimit=${DISABLE_REFRESH_TOKEN_RATE_LIMIT}" \
+	-o /out/leafwiki ./cmd
 
 # Step 3: Final image (small)
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS final

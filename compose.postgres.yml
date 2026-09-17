@@ -39,6 +39,6 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["go"]
-    command: ["test", "-count=1", "-v", "./internal/storage/postgres/...", "./internal/core/tree/...", "./internal/core/auth/...", "./internal/favorites/...", "./internal/usersettings/...", "./internal/publicaccess/...", "./internal/branding/...", "./internal/wiki/...", "./internal/links/...", "./internal/tags/...", "./internal/properties/...", "./internal/search/...", "./internal/transfer/...", "./internal/snapshot/...", "./internal/restore/...", "./cmd/leafwiki/..."]
+    command: ["test", "-count=1", "-v", "./internal/storage/postgres/...", "./internal/core/tree/...", "./internal/core/auth/...", "./internal/favorites/...", "./internal/usersettings/...", "./internal/publicaccess/...", "./internal/branding/...", "./internal/wiki/...", "./internal/links/...", "./internal/tags/...", "./internal/properties/...", "./internal/search/...", "./internal/transfer/...", "./internal/snapshot/...", "./internal/restore/...", "./cmd/..."]
 volumes:
   postgres-data:

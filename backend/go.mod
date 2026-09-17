@@ -1,4 +1,4 @@
-module github.com/kawaiiwiki/komachi
+module github.com/kawaiiwiki/komachi/backend
 
 go 1.26.0
 

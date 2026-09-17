@@ -1,11 +1,12 @@
 BINARY_NAME=leafwiki
-CMD_DIR=./cmd/leafwiki
+BACKEND_DIR=backend
+CMD_DIR=./cmd
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 RELEASE_DIR := releases
 DOCKER_BUILDER := Dockerfile.builder
 UI_DIR := ui/leafwiki-ui
-HTTP_DIST := internal/http/dist
-EMBED_LDFLAGS := -X github.com/perber/wiki/internal/http.EmbedFrontend=true -X github.com/perber/wiki/internal/http.Environment=production
+HTTP_DIST := backend/internal/http/dist
+EMBED_LDFLAGS := -X github.com/kawaiiwiki/komachi/backend/internal/http.EmbedFrontend=true -X github.com/kawaiiwiki/komachi/backend/internal/http.Environment=production
 LDFLAGS := -X main.Version=$(VERSION) $(EMBED_LDFLAGS)
 
 PLATFORMS := \
@@ -17,7 +18,7 @@ PLATFORMS := \
 
 all: build
 
-# Build the Vite SPA into internal/http/dist for go:embed.
+# Build the Vite SPA into backend/internal/http/dist for go:embed.
 ui:
 	@echo "Building frontend..."
 	cd $(UI_DIR) && npm ci --ignore-scripts && VITE_API_URL=/ APP_VERSION=$(VERSION) npm run build
@@ -29,24 +30,24 @@ ui:
 
 # Self-contained binary with embedded UI (matches release/Docker builds).
 build: ui
-	go build -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) $(CMD_DIR)
+	go -C $(BACKEND_DIR) build -ldflags "$(LDFLAGS)" -o $(abspath $(BINARY_NAME)) $(CMD_DIR)
 
 # API-only binary for local Vite-proxied development (no embedded SPA).
 build-api:
-	go build -ldflags "-X main.Version=$(VERSION)" -o $(BINARY_NAME) $(CMD_DIR)
+	go -C $(BACKEND_DIR) build -ldflags "-X main.Version=$(VERSION)" -o $(abspath $(BINARY_NAME)) $(CMD_DIR)
 
 run:
-	go run -ldflags "-X main.Version=$(VERSION)" $(CMD_DIR)
+	go -C $(BACKEND_DIR) run -ldflags "-X main.Version=$(VERSION)" $(CMD_DIR)
 
 clean:
 	rm -f $(BINARY_NAME)
 	rm -rf $(RELEASE_DIR)
 
 test:
-	go test ./...
+	go -C $(BACKEND_DIR) test ./...
 
 bench:
-	go test -bench=. -benchmem -benchtime=3s ./internal/links/... ./internal/core/revision/...
+	go -C $(BACKEND_DIR) test -bench=. -benchmem -benchtime=3s ./internal/links/... ./internal/core/revision/...
 
 # Build all platform targets
 release: $(PLATFORMS)
@@ -124,7 +125,7 @@ help:
 	@echo "Available commands:"
 	@echo "  make build                – Build self-contained binary with embedded UI (needs Node.js)"
 	@echo "  make build-api            – Build API-only binary (use with Vite in Dev Setup)"
-	@echo "  make ui                   – Build frontend into internal/http/dist for embedding"
+	@echo "  make ui                   – Build frontend into backend/internal/http/dist for embedding"
 	@echo "  make release              – Cross-compile binaries for all platforms (via Docker)"
 	@echo "  make clean                – Clean all generated files"
 	@echo "  make test                 – Run all Go tests"

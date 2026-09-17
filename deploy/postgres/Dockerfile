@@ -3,8 +3,9 @@ FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aab
 # Existing CLI regression tests execute scripts/resolve-version.sh (Bash).
 RUN apk add --no-cache bash postgresql17-client
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./backend/
+WORKDIR /src/backend
 RUN go mod download
-COPY . .
-RUN go build -o /usr/local/bin/leafwiki ./cmd/leafwiki
+COPY . ../
+RUN go build -o /usr/local/bin/leafwiki ./cmd
 ENTRYPOINT ["leafwiki"]

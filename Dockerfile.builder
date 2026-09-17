@@ -26,14 +26,15 @@ ENV CGO_ENABLED=${CGO_ENABLED}
 
 WORKDIR /build
 
-COPY go.mod go.sum ./
+COPY backend/go.mod backend/go.sum ./backend/
+WORKDIR /build/backend
 RUN go mod download
 
-COPY . .
+COPY . ../
 
 # Copy built frontend
 COPY --from=frontend /ui/dist ./internal/http/dist
 
 RUN go build \
-  -ldflags="-s -w -X github.com/perber/wiki/internal/http.EmbedFrontend=true -X github.com/perber/wiki/internal/http.Environment=production -X main.Version=${APP_VERSION}" \
-  -o /out/${OUTPUT} ./cmd/leafwiki
+  -ldflags="-s -w -X github.com/kawaiiwiki/komachi/backend/internal/http.EmbedFrontend=true -X github.com/kawaiiwiki/komachi/backend/internal/http.Environment=production -X main.Version=${APP_VERSION}" \
+  -o /out/${OUTPUT} ./cmd

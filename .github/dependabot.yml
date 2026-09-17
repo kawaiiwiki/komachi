@@ -21,7 +21,7 @@ updates:
 
   # Backend (Go)
   - package-ecosystem: "gomod"
-    directory: "/"
+    directory: "/backend"
     schedule:
       interval: "monthly"
     groups:

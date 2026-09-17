@@ -60,11 +60,11 @@ mkdir -p "$RESULTS_DIR"
 echo "ci-suite.sh: results -> $RESULTS_DIR"
 
 echo "ci-suite.sh: building..."
-(cd "$REPO_ROOT" && go build -o "$BINARY" ./cmd/leafwiki)
+(cd "$REPO_ROOT" && go -C backend build -o "$BINARY" ./cmd)
 
 echo "ci-suite.sh: seeding (500 flat pages + 1 section of 20 for sort)..."
-(cd "$REPO_ROOT" && go run ./loadtest/seed/gen-pages --count 500 --dir "$DATA_DIR" >/dev/null)
-(cd "$REPO_ROOT" && go run ./loadtest/seed/gen-nested --dir "$DATA_DIR" --sections 1 --pages-per-section 20 --start-index 1 >/dev/null)
+(cd "$REPO_ROOT" && go run ./loadtest/seed/gen-pages/main.go --count 500 --dir "$DATA_DIR" >/dev/null)
+(cd "$REPO_ROOT" && go run ./loadtest/seed/gen-nested/main.go --dir "$DATA_DIR" --sections 1 --pages-per-section 20 --start-index 1 >/dev/null)
 
 echo "ci-suite.sh: starting server on $BASE_URL ..."
 "$BINARY" \

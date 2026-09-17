@@ -12,12 +12,12 @@ test-results/
 dist/
 releases/
 leafwiki
-internal/http/dist/*
-!internal/http/dist/.gitkeep
+backend/internal/http/dist/*
+!backend/internal/http/dist/.gitkeep
 
 # Runtime / local data
 data/
-cmd/leafwiki/data/
+backend/cmd/data/
 
 # Debug binaries dropped by dlv / GoLand
 **/__debug_bin*
