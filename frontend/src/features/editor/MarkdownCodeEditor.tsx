@@ -89,6 +89,7 @@ export default function MarkdownCodeEditor({
   const onChangeRef = useRef(onChange)
   const onPasteRichRef = useRef(onPasteRich)
   const valueRef = useRef(initialValue)
+  const applyingSource = useRef(false)
   // Always tracks the latest initialValue so the setup effect can read it
   // without having it in the dependency array (which would reinitialize on every keystroke).
   const initialValueRef = useRef(initialValue)
@@ -118,7 +119,7 @@ export default function MarkdownCodeEditor({
       if (update.docChanged) {
         const newValue = update.state.doc.toString()
         valueRef.current = newValue // Update internal tracker
-        onChangeRef.current(newValue)
+        if (!applyingSource.current) onChangeRef.current(newValue)
       }
 
       if (update.selectionSet && onCursorLineChange) {
@@ -353,10 +354,6 @@ export default function MarkdownCodeEditor({
     viewRef.current = view
     editorViewRef.current = view
 
-    requestAnimationFrame(() => {
-      view.focus()
-    })
-
     return () => {
       view.destroy()
       viewRef.current = null
@@ -364,6 +361,39 @@ export default function MarkdownCodeEditor({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey, onCursorLineChange, editorViewRef, themeCompartment])
+
+  // Update the existing view, preserving selection, scroll, history and IME.
+  useLayoutEffect(() => {
+    const view = viewRef.current
+    if (!view || valueRef.current === initialValue) return
+    const previous = view.state.doc.toString()
+    let from = 0
+    while (
+      from < previous.length &&
+      from < initialValue.length &&
+      previous[from] === initialValue[from]
+    )
+      from++
+    let oldEnd = previous.length
+    let newEnd = initialValue.length
+    while (
+      oldEnd > from &&
+      newEnd > from &&
+      previous[oldEnd - 1] === initialValue[newEnd - 1]
+    ) {
+      oldEnd--
+      newEnd--
+    }
+    applyingSource.current = true
+    try {
+      view.dispatch({
+        changes: { from, to: oldEnd, insert: initialValue.slice(from, newEnd) },
+      })
+      valueRef.current = initialValue
+    } finally {
+      applyingSource.current = false
+    }
+  }, [initialValue])
 
   useEffect(() => {
     const view = viewRef.current

@@ -107,7 +107,9 @@
     "resizeAriaLabel": "Editor- und Vorschaubereich anpassen",
     "fileTooLarge": "Datei zu groß. Maximal {{maxSize}} erlaubt.",
     "uploadedToast": "{{filename}} hochgeladen",
-    "uploadErrorFallback": "{{filename}} konnte nicht hochgeladen werden"
+    "uploadErrorFallback": "{{filename}} konnte nicht hochgeladen werden",
+    "protectedSyntax": "Gestrichelte Quelltextblöcke erhalten erweiterte Syntax. Bearbeite diese Blöcke in Raw Markdown.",
+    "visualError": "Der visuelle Editor konnte den Inhalt nicht laden. Dein Markdown bleibt erhalten; bearbeite es in Raw Markdown."
   },
   "autoSave": {
     "savedToast": "Gespeichert",

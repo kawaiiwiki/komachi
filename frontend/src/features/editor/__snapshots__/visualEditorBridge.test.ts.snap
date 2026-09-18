@@ -1,0 +1,31 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`real Milkdown Markdown bridge > documents spacing normalization only after a real Visual edit 1`] = `
+"# New Heading
+
+paragraph\\
+next
+
+3. first
+4. second
+
+| long column |  b  |
+| ----------- | :-: |
+| c           |  d  |
+"
+`;
+
+exports[`real Milkdown Markdown bridge > records serializer formatting for existing Markdown 1`] = `
+"Title
+=====
+
+__bold__ and *italic*
+
+* item
+* next
+
+| a | b |
+| - | - |
+| c | d |
+"
+`;

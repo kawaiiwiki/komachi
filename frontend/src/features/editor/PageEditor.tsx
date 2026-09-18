@@ -165,13 +165,7 @@ export default function PageEditor() {
   }, [navigate])
 
   const openLinkDialog = useCallback(() => {
-    const view = editorRef.current?.editorViewRef.current
-    const selectedText = view
-      ? view.state.doc.sliceString(
-          view.state.selection.main.from,
-          view.state.selection.main.to,
-        )
-      : ''
+    const selectedText = editorRef.current?.getSelectedText?.() ?? ''
     openDialog(DIALOG_LINK_INSERT, { editorRef, selectedText })
   }, [editorRef, openDialog])
 

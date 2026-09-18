@@ -1,21 +1,21 @@
-import { useDebounce } from '@/lib/useDebounce'
+import i18n from '@/lib/i18n'
 import { useIsMobile } from '@/lib/useIsMobile'
-import { historyField, redo, undo } from '@codemirror/commands'
+import { undoDepth, redoDepth, redo, undo } from '@codemirror/commands'
 import { EditorView } from '@codemirror/view'
 import { Code2, Eye } from 'lucide-react'
 import {
   ClipboardEvent,
   forwardRef,
-  JSX,
-  MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
   useState,
 } from 'react'
-import { useTranslation } from '../../../node_modules/react-i18next'
-import MarkdownPreview from '../preview/MarkdownPreview'
+import { useTranslation } from 'react-i18next'
+import VisualMarkdownEditor, {
+  type VisualMarkdownEditorRef,
+} from './VisualMarkdownEditor'
 import MarkdownCodeEditor from './MarkdownCodeEditor'
 import MarkdownToolbar from './MarkdownToolbar'
 import {
@@ -30,13 +30,12 @@ import { formatBytes, IMAGE_EXTENSIONS } from '@/lib/config'
 import { useConfigStore } from '@/stores/config'
 import { useEditorStore } from '@/stores/editor'
 import { toast } from 'sonner'
-import { usePageEditorStore } from './pageEditorStore'
-import { slugifyHeadline } from '../preview/rehypeLineNumber'
 import { htmlToMarkdown } from './htmlToMarkdown'
 import { uploadInlineDataUriImages } from './pasteImageUpload'
 
 export type MarkdownEditorRef = {
   insertAtCursor: (text: string) => void
+  getSelectedText?: () => string
   getMarkdown: () => string
   insertWrappedText: (before: string, after?: string) => void
   insertHeading: (level: 1 | 2 | 3) => void
@@ -58,107 +57,33 @@ type Props = {
   pageId: string
 }
 
-const DEFAULT_EDITOR_PANE_WIDTH = 50
-const MIN_EDITOR_PANE_WIDTH = 25
-const MAX_EDITOR_PANE_WIDTH = 75
-const EDITOR_PANE_WIDTH_STORAGE_KEY = 'leafwiki-editor-pane-width'
-
-function clampEditorPaneWidth(value: number) {
-  return Math.min(MAX_EDITOR_PANE_WIDTH, Math.max(MIN_EDITOR_PANE_WIDTH, value))
-}
-
-function getInitialEditorPaneWidth() {
-  if (typeof window === 'undefined') return DEFAULT_EDITOR_PANE_WIDTH
-
-  const storedValue = window.localStorage.getItem(EDITOR_PANE_WIDTH_STORAGE_KEY)
-  const parsed = Number.parseFloat(storedValue ?? '')
-
-  if (Number.isNaN(parsed)) return DEFAULT_EDITOR_PANE_WIDTH
-
-  return clampEditorPaneWidth(parsed)
-}
-
 const MarkdownEditor = (
   { initialValue = '', onChange, pageId }: Props,
   ref: React.ForwardedRef<MarkdownEditorRef>,
 ) => {
-  const findHeadingTarget = useCallback(
-    (preview: HTMLDivElement, line: number): HTMLElement | null => {
-      const headingByLine = preview.querySelector(
-        `h1[data-line='${line}'], h2[data-line='${line}'], h3[data-line='${line}'], h4[data-line='${line}'], h5[data-line='${line}'], h6[data-line='${line}']`,
-      ) as HTMLElement | null
-      if (headingByLine) return headingByLine
-
-      const lineText = editorViewRef.current?.state.doc.line(line).text ?? ''
-      const headingMatch = lineText.match(/^\s{0,3}(#{1,6})\s+(.*)$/)
-      if (!headingMatch) return null
-
-      const headingText = headingMatch[2].replace(/<[^>]*>/g, ' ').trim()
-      const headingId = slugifyHeadline(headingText)
-      if (!headingId) return null
-
-      const escapedId =
-        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-          ? CSS.escape(headingId)
-          : headingId
-
-      return preview.querySelector(`#${escapedId}`) as HTMLElement | null
-    },
-    [],
-  )
-
-  const { t } = useTranslation('editor')
-  const previewRef = useRef<HTMLDivElement | null>(null)
-  const desktopSplitRef = useRef<HTMLDivElement | null>(null)
-
-  const setPreviewRef = useCallback((node: HTMLDivElement | null) => {
-    if (node) {
-      previewRef.current = node
-    }
-  }, [])
-  const path = usePageEditorStore((s) => s.page?.path)
+  const { t } = useTranslation('editor', { i18n })
   const editorViewRef = useRef<EditorView | null>(null)
-  const rafRef = useRef<number | null>(null)
-  const currentCursorLineRef = useRef<number | null>(null)
-  const liveEditorPaneWidthRef = useRef(DEFAULT_EDITOR_PANE_WIDTH)
-  const resizeHandlersRef = useRef<{
-    onMouseMove: (event: MouseEvent) => void
-    onMouseUp: () => void
-  } | null>(null)
-  const [assetVersion, setAssetVersion] = useState(() => Date.now()) // Initial version based on current timestamp
-
+  const visualRef = useRef<VisualMarkdownEditorRef | null>(null)
+  const activePane = useRef<'visual' | 'raw'>('visual')
+  const sourceComposing = useRef(false)
   const [markdown, setMarkdown] = useState(initialValue)
-  const [editorPaneWidth, setEditorPaneWidth] = useState(
-    getInitialEditorPaneWidth,
-  )
-  const [isResizingSplit, setIsResizingSplit] = useState(false)
-  const debouncedPreview = useDebounce(markdown, 100)
+  const markdownRef = useRef(initialValue)
   const isMobile = useIsMobile()
+  const [activeTab, setActiveTab] = useState<'visual' | 'raw'>('visual')
   const maxAssetUploadSizeBytes = useConfigStore(
     (s) => s.maxAssetUploadSizeBytes,
   )
+  const { lineWrap } = useEditorStore()
 
-  const {
-    previewVisible: showPreview,
-    previewStacked,
-    togglePreview,
-    togglePreviewLayout,
-    lineWrap,
-  } = useEditorStore()
-
-  const [activeTab, setActiveTab] = useState<'editor' | 'preview'>('editor')
-
-  useEffect(() => {
-    liveEditorPaneWidthRef.current = editorPaneWidth
-  }, [editorPaneWidth])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem(
-      EDITOR_PANE_WIDTH_STORAGE_KEY,
-      String(editorPaneWidth),
-    )
-  }, [editorPaneWidth])
+  const publish = useCallback(
+    (value: string) => {
+      if (markdownRef.current === value) return
+      markdownRef.current = value
+      setMarkdown(value)
+      onChange(value)
+    },
+    [onChange],
+  )
 
   // Handles paste requests.
   // This allows to paste images from clipboard directly into the editor.
@@ -189,6 +114,9 @@ const MarkdownEditor = (
       // We take over the paste event to handle image files
       event.preventDefault()
       event.stopPropagation()
+
+      const targetPane = activePane.current
+      const startView = editorViewRef.current
 
       // Process each file
       for (const file of files) {
@@ -222,6 +150,11 @@ const MarkdownEditor = (
             ? `![${file.name}](${uploadedFile})\n`
             : `[${file.name}](${uploadedFile})\n`
 
+          if (editorViewRef.current !== startView) continue
+          if (targetPane === 'visual') {
+            visualRef.current?.insert(markdown)
+            continue
+          }
           const view = editorViewRef.current
           if (!view) continue
           const { from } = view.state.selection.main
@@ -231,8 +164,7 @@ const MarkdownEditor = (
           })
 
           const newDoc = view.state.doc.toString()
-          setMarkdown(newDoc)
-          onChange(newDoc)
+          publish(newDoc)
           editorViewRef.current?.focus()
         } catch (err) {
           console.error('Upload failed', err)
@@ -245,20 +177,13 @@ const MarkdownEditor = (
         }
       }
     },
-    [editorViewRef, maxAssetUploadSizeBytes, onChange, pageId, setMarkdown, t],
+    [maxAssetUploadSizeBytes, pageId, publish, t],
   )
 
   useEffect(() => {
+    markdownRef.current = initialValue
     setMarkdown(initialValue)
-  }, [initialValue])
-
-  const handleEditorChange = useCallback(
-    (val: string) => {
-      setMarkdown(val)
-      onChange(val)
-    },
-    [onChange],
-  )
+  }, [initialValue, pageId])
 
   // Rich paste (HTML → Markdown) is only reachable via Ctrl/Cmd+Shift+V and the
   // toolbar/dropdown buttons for now — plain Ctrl/Cmd+V stays default browser
@@ -266,6 +191,7 @@ const MarkdownEditor = (
   // Shift-Mod-v keymap, which calls this same callback.
   const pasteRich = useCallback(async () => {
     const startView = editorViewRef.current
+    const targetPane = activePane.current
     if (!startView) return
     let md: string | null = null
     try {
@@ -310,19 +236,23 @@ const MarkdownEditor = (
     // live view the paste was initiated on.
     const view = editorViewRef.current
     if (!view || view !== startView) return
+    if (targetPane === 'visual') {
+      visualRef.current?.insert(md)
+      return
+    }
     const sel = view.state.selection.main
     view.dispatch({
       changes: { from: sel.from, to: sel.to, insert: md },
       selection: { anchor: sel.from + md.length },
     })
     const newDoc = view.state.doc.toString()
-    setMarkdown(newDoc)
-    onChange(newDoc)
+    publish(newDoc)
     view.focus()
-  }, [maxAssetUploadSizeBytes, onChange, pageId, t])
+  }, [maxAssetUploadSizeBytes, publish, pageId, t])
 
   const pastePlain = useCallback(async () => {
     const startView = editorViewRef.current
+    const targetPane = activePane.current
     if (!startView) return
     let text: string
     try {
@@ -338,19 +268,24 @@ const MarkdownEditor = (
     // live view the paste was initiated on.
     const view = editorViewRef.current
     if (!view || view !== startView) return
+    if (targetPane === 'visual') {
+      visualRef.current?.insertPlain(text)
+      return
+    }
     const sel = view.state.selection.main
     view.dispatch({
       changes: { from: sel.from, to: sel.to, insert: text },
       selection: { anchor: sel.from + text.length },
     })
     const newDoc = view.state.doc.toString()
-    setMarkdown(newDoc)
-    onChange(newDoc)
+    publish(newDoc)
     view.focus()
-  }, [onChange, t])
+  }, [publish, t])
 
   useImperativeHandle(ref, () => ({
     insertAtCursor: (text: string) => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.insert(text)
       const view = editorViewRef.current
       if (!view) return
       const { from } = view.state.selection.main
@@ -359,20 +294,22 @@ const MarkdownEditor = (
         selection: { anchor: from + text.length },
       })
       const newDoc = view.state.doc.toString()
-      setMarkdown(newDoc)
-      onChange(newDoc)
+      publish(newDoc)
       editorViewRef.current?.focus()
     },
     insertWrappedText: (before: string, after = before) => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.wrap(before, after)
       const view = editorViewRef.current
       if (!view) return
       insertWrappedText(view, before, after)
       const newDoc = view.state.doc.toString()
-      setMarkdown(newDoc)
-      onChange(newDoc)
+      publish(newDoc)
       editorViewRef.current?.focus()
     },
     replaceSelection: (text: string) => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.insert(text)
       const view = editorViewRef.current
       if (!view) return
       const { from, to } = view.state.selection.main
@@ -381,17 +318,17 @@ const MarkdownEditor = (
         selection: { anchor: from + text.length },
       })
       const newDoc = view.state.doc.toString()
-      setMarkdown(newDoc)
-      onChange(newDoc)
+      publish(newDoc)
       editorViewRef.current?.focus()
     },
     insertHeading: (level: 1 | 2 | 3) => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.heading(level)
       const view = editorViewRef.current
       if (!view) return
       insertHeadingAtStart(view, level)
       const newDoc = view.state.doc.toString()
-      setMarkdown(newDoc)
-      onChange(newDoc)
+      publish(newDoc)
       editorViewRef.current?.focus()
     },
     replaceFilenameInMarkdown: (before: string, after: string) => {
@@ -406,50 +343,48 @@ const MarkdownEditor = (
         changes: { from: 0, to: view.state.doc.length, insert: updatedText },
       })
 
-      setMarkdown(updatedText)
-      onChange(updatedText)
+      publish(updatedText)
     },
     editorViewRef: editorViewRef,
-    getMarkdown: () => editorViewRef.current?.state.doc.toString() || '',
-    focus: () => editorViewRef.current?.focus(),
+    getMarkdown: () => markdownRef.current,
+    getSelectedText: () => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.selectedText() ?? ''
+      const view = editorViewRef.current
+      return (
+        view?.state.sliceDoc(
+          view.state.selection.main.from,
+          view.state.selection.main.to,
+        ) ?? ''
+      )
+    },
+    focus: () =>
+      activePane.current === 'visual'
+        ? visualRef.current?.focus()
+        : editorViewRef.current?.focus(),
     canUndo: () => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.canUndo() ?? false
       const view = editorViewRef.current
       if (!view) return false
-      const hist = view.state.field(historyField, false) as
-        | {
-            done: unknown[]
-            undone: unknown[]
-          }
-        | undefined
-
-      if (!hist || typeof hist !== 'object') return false
-      // Not sure why this is > 1, but it seems to work
-      // It might be because the initial state counts as a change
-      // or because the first change is always recorded in the history
-
-      return hist?.done?.length > 1
+      return undoDepth(view.state) > 0
     },
     canRedo: () => {
+      if (activePane.current === 'visual')
+        return visualRef.current?.canRedo() ?? false
       const view = editorViewRef.current
       if (!view) return false
-      const hist = view.state.field(historyField, false) as
-        | {
-            done: unknown[]
-            undone: unknown[]
-          }
-        | undefined
-
-      if (!hist || typeof hist !== 'object') return false
-
-      return hist?.undone?.length > 0
+      return redoDepth(view.state) > 0
     },
     undo: () => {
+      if (activePane.current === 'visual') return visualRef.current?.undo()
       const view = editorViewRef.current
       if (view) {
         undo(view)
       }
     },
     redo: () => {
+      if (activePane.current === 'visual') return visualRef.current?.redo()
       const view = editorViewRef.current
       if (view) {
         redo(view)
@@ -459,377 +394,81 @@ const MarkdownEditor = (
     pastePlain,
   }))
 
-  const onAssetVersionChange = useCallback(
-    (version: number) => {
-      // Update the asset version to trigger a re-render of the preview
-      // This is useful when images or other assets change
-      // The preview will re-render with the new assets
-      setAssetVersion(version)
-    },
-    [setAssetVersion],
-  )
-
-  const scrollPreviewToLine = useCallback(
-    (line: number, behavior: ScrollBehavior = 'smooth') => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-
-      rafRef.current = requestAnimationFrame(() => {
-        const preview = previewRef.current
-        if (!preview) return
-
-        let target =
-          findHeadingTarget(preview, line) ??
-          (preview.querySelector(`[data-line='${line}']`) as HTMLElement | null)
-
-        if (!target) {
-          for (let i = line - 1; i > 0; i--) {
-            const fallback = preview.querySelector(
-              `[data-line='${i}']`,
-            ) as HTMLElement | null
-            if (fallback) {
-              target = fallback
-              break
-            }
-          }
-        }
-
-        if (target) {
-          // Measure relative to the preview viewport instead of relying on
-          // offsetTop, which can be relative to an intermediate offsetParent.
-          const previewRect = preview.getBoundingClientRect()
-          const targetRect = target.getBoundingClientRect()
-          const offsetTop = targetRect.top - previewRect.top + preview.scrollTop
-
-          const targetHeight = target.offsetHeight
-          const containerHeight = preview.clientHeight
-          const maxScrollTop = Math.max(
-            0,
-            preview.scrollHeight - containerHeight,
-          )
-          const desiredScrollTop = Math.max(
-            0,
-            Math.min(
-              maxScrollTop,
-              offsetTop - containerHeight / 2 + targetHeight / 2,
-            ),
-          )
-
-          const threshold = 16
-          const distance = Math.abs(preview.scrollTop - desiredScrollTop)
-
-          if (distance > threshold) {
-            preview.scrollTo({ top: desiredScrollTop, behavior })
-          }
-        }
-      })
-    },
-    [findHeadingTarget],
-  )
-
-  const onCursorLineChange = useCallback(
-    (line: number) => {
-      currentCursorLineRef.current = line
-      scrollPreviewToLine(line, 'smooth')
-    },
-    [scrollPreviewToLine],
-  )
-
-  useEffect(() => {
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!showPreview) return
-    const currentLine = currentCursorLineRef.current
-    if (currentLine == null) return
-
-    scrollPreviewToLine(currentLine, 'auto')
-  }, [assetVersion, debouncedPreview, scrollPreviewToLine, showPreview])
-
-  useEffect(() => {
-    if (!showPreview) return
-
-    const preview = previewRef.current
-    const content = preview?.firstElementChild
-    if (!preview || !content || typeof ResizeObserver === 'undefined') return
-
-    const observer = new ResizeObserver(() => {
-      const currentLine = currentCursorLineRef.current
-      if (currentLine == null) return
-
-      scrollPreviewToLine(currentLine, 'auto')
-    })
-
-    observer.observe(content)
-
-    return () => {
-      observer.disconnect()
-    }
-  }, [assetVersion, debouncedPreview, scrollPreviewToLine, showPreview])
-
-  useEffect(() => {
-    if (!isResizingSplit || !resizeHandlersRef.current) return
-
-    const { onMouseMove, onMouseUp } = resizeHandlersRef.current
-    document.addEventListener('mousemove', onMouseMove)
-    document.addEventListener('mouseup', onMouseUp)
-
-    return () => {
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    }
-  }, [isResizingSplit])
-
-  useEffect(
-    () => () => {
-      if (!resizeHandlersRef.current) return
-
-      const { onMouseMove, onMouseUp } = resizeHandlersRef.current
-      document.removeEventListener('mousemove', onMouseMove)
-      document.removeEventListener('mouseup', onMouseUp)
-    },
-    [],
-  )
-
-  const handleSplitResize = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (isMobile || !showPreview) return
-
-    event.preventDefault()
-    event.stopPropagation()
-
-    const startPosition = previewStacked ? event.clientY : event.clientX
-    const startWidth = editorPaneWidth
-    const splitRect = desktopSplitRef.current?.getBoundingClientRect()
-    const splitSize =
-      (previewStacked ? splitRect?.height : splitRect?.width) ||
-      (previewStacked ? window.innerHeight : window.innerWidth)
-
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      const currentPosition = previewStacked
-        ? moveEvent.clientY
-        : moveEvent.clientX
-      const delta = currentPosition - startPosition
-      const nextWidth = clampEditorPaneWidth(
-        startWidth + (delta / splitSize) * 100,
-      )
-
-      liveEditorPaneWidthRef.current = nextWidth
-      setEditorPaneWidth(nextWidth)
-    }
-
-    const onMouseUp = () => {
-      setEditorPaneWidth(liveEditorPaneWidthRef.current)
-      setIsResizingSplit(false)
-      resizeHandlersRef.current = null
-    }
-
-    resizeHandlersRef.current = { onMouseMove, onMouseUp }
-    setIsResizingSplit(true)
-  }
-
-  const renderToolbar = useCallback((): JSX.Element => {
-    return (
+  return (
+    <div className="markdown-editor" onPasteCapture={handlePaste}>
       <MarkdownToolbar
         editorRef={ref as React.RefObject<MarkdownEditorRef>}
         pageId={pageId}
-        onTogglePreview={togglePreview}
-        onTogglePreviewLayout={togglePreviewLayout}
-        previewVisible={showPreview}
-        previewStacked={previewStacked}
-        onAssetVersionChange={onAssetVersionChange}
       />
-    )
-  }, [
-    onAssetVersionChange,
-    pageId,
-    ref,
-    showPreview,
-    previewStacked,
-    togglePreview,
-    togglePreviewLayout,
-  ])
-
-  const renderEditor = useCallback(
-    (toolbar: boolean = true): JSX.Element => {
-      return (
-        <>
-          {toolbar && renderToolbar()}
-          <MarkdownCodeEditor
-            initialValue={markdown}
-            resetKey={pageId}
-            onChange={handleEditorChange}
-            onCursorLineChange={onCursorLineChange}
-            editorViewRef={editorViewRef}
-            lineWrap={lineWrap}
-            onPasteRich={pasteRich}
-          />
-        </>
-      )
-    },
-    [
-      handleEditorChange,
-      markdown,
-      pageId,
-      pasteRich,
-      lineWrap,
-      onCursorLineChange,
-      renderToolbar,
-    ],
-  )
-
-  const renderPreview = useCallback((): JSX.Element => {
-    return (
-      <div
-        ref={setPreviewRef}
-        className="custom-scrollbar markdown-editor__preview box-content h-full w-full min-w-full overflow-auto"
-        id="markdown-preview-container"
-      >
-        <div className="p-4">
-          <MarkdownPreview
-            content={debouncedPreview}
-            path={path}
-            key={assetVersion}
-          />
-        </div>
-      </div>
-    )
-  }, [assetVersion, debouncedPreview, setPreviewRef, path])
-
-  return (
-    <div className="markdown-editor" onPaste={handlePaste}>
-      {/* Mobile */}
       {isMobile && (
-        <div className="markdown-editor__mobile">
-          {/* Mobile Tabs */}
-          <div className="markdown-editor__tabs" role="tablist">
-            {[
-              {
-                id: 'editor',
-                label: t('markdownEditor.editorTab'),
-                icon: <Code2 size={16} />,
-              },
-              {
-                id: 'preview',
-                label: t('markdownEditor.previewTab'),
-                icon: <Eye size={16} />,
-              },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as 'editor' | 'preview')}
-                className={
-                  activeTab === tab.id
-                    ? 'markdown-editor__tab-button markdown-editor__tab-button--active'
-                    : 'markdown-editor__tab-button markdown-editor__tab-button--inactive'
-                }
-              >
-                {tab.icon}
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {activeTab === 'editor' ? renderToolbar() : null}
-
-          <div className="custom-scrollbar markdown-editor__pane-container">
-            <div
-              className={
-                activeTab === 'editor'
-                  ? 'markdown-editor__pane'
-                  : 'markdown-editor__pane--hidden'
-              }
-              key="editor"
+        <div className="markdown-editor__tabs" role="tablist">
+          {(['visual', 'raw'] as const).map((tab) => (
+            <button
+              key={tab}
+              role="tab"
+              aria-selected={activeTab === tab}
+              aria-controls={`markdown-${tab}-pane`}
+              onClick={() => {
+                activePane.current = tab
+                setActiveTab(tab)
+              }}
+              className={`markdown-editor__tab-button markdown-editor__tab-button--${activeTab === tab ? 'active' : 'inactive'}`}
             >
-              {renderEditor(false)}
-            </div>
-            <div
-              className={
-                activeTab === 'preview'
-                  ? 'markdown-editor__pane'
-                  : 'markdown-editor__pane--hidden'
-              }
-              key="preview"
-            >
-              {renderPreview()}
-            </div>
-          </div>
+              {tab === 'visual' ? <Eye size={16} /> : <Code2 size={16} />}
+              {tab === 'visual' ? 'Visual editor' : 'Raw Markdown'}
+            </button>
+          ))}
         </div>
       )}
-
-      {!isMobile && (
-        <div className="flex h-full w-full flex-col">
-          {renderToolbar()}
-          <div
-            ref={desktopSplitRef}
-            className={
-              previewStacked && showPreview
-                ? 'markdown-editor__stacked-layout'
-                : 'flex w-full flex-1 overflow-hidden'
-            }
-          >
-            <div
-              className={
-                showPreview
-                  ? previewStacked
-                    ? 'custom-scrollbar markdown-editor__editor-pane markdown-editor__editor-pane--stacked'
-                    : 'custom-scrollbar markdown-editor__editor-pane markdown-editor__editor-pane--half'
-                  : 'custom-scrollbar markdown-editor__editor-pane markdown-editor__editor-pane--full'
-              }
-              style={
-                showPreview ? { flex: `0 0 ${editorPaneWidth}%` } : undefined
-              }
-            >
-              {renderEditor(false)}
-            </div>
-
-            {showPreview && (
-              <>
-                <div
-                  className={
-                    previewStacked
-                      ? `markdown-editor__divider markdown-editor__divider--stacked ${
-                          isResizingSplit
-                            ? 'markdown-editor__divider--active'
-                            : ''
-                        }`
-                      : `markdown-editor__divider ${
-                          isResizingSplit
-                            ? 'markdown-editor__divider--active'
-                            : ''
-                        }`
-                  }
-                  id="editor-preview-divider"
-                  onMouseDown={handleSplitResize}
-                  role="separator"
-                  aria-orientation={previewStacked ? 'horizontal' : 'vertical'}
-                  aria-label={t('markdownEditor.resizeAriaLabel')}
-                  aria-valuemin={MIN_EDITOR_PANE_WIDTH}
-                  aria-valuemax={MAX_EDITOR_PANE_WIDTH}
-                  aria-valuenow={Math.round(editorPaneWidth)}
-                  data-testid="editor-preview-resize-handle"
-                />
-
-                <div
-                  className={
-                    previewStacked
-                      ? 'markdown-editor__preview-container markdown-editor__preview-container--stacked'
-                      : 'markdown-editor__preview-container'
-                  }
-                  style={
-                    previewStacked
-                      ? { flex: '1 1 0', minHeight: 0 }
-                      : { flex: '1 1 0', minWidth: 0 }
-                  }
-                >
-                  {renderPreview()}
-                </div>
-              </>
-            )}
+      <div className="markdown-editor__dual">
+        <section
+          id="markdown-visual-pane"
+          aria-label="Visual editor"
+          className="markdown-editor__dual-pane"
+          hidden={isMobile && activeTab !== 'visual'}
+          onFocusCapture={() => {
+            activePane.current = 'visual'
+          }}
+        >
+          <h2 className="markdown-editor__pane-label">Visual editor</h2>
+          <div className="markdown-editor__visual-scroll custom-scrollbar">
+            <VisualMarkdownEditor
+              ref={visualRef}
+              markdown={markdown}
+              pageId={pageId}
+              onChange={publish}
+              sourceComposing={sourceComposing}
+            />
           </div>
-        </div>
-      )}
+        </section>
+        <section
+          id="markdown-raw-pane"
+          aria-label="Raw Markdown"
+          className="markdown-editor__dual-pane"
+          hidden={isMobile && activeTab !== 'raw'}
+          onFocusCapture={() => {
+            activePane.current = 'raw'
+          }}
+          onCompositionStart={() => {
+            sourceComposing.current = true
+          }}
+          onCompositionEnd={() => {
+            sourceComposing.current = false
+          }}
+        >
+          <h2 className="markdown-editor__pane-label">Raw Markdown</h2>
+          <div className="markdown-editor__raw-scroll">
+            <MarkdownCodeEditor
+              initialValue={markdown}
+              resetKey={pageId}
+              onChange={publish}
+              editorViewRef={editorViewRef}
+              lineWrap={lineWrap}
+              onPasteRich={pasteRich}
+            />
+          </div>
+        </section>
+      </div>
     </div>
   )
 }

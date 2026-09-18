@@ -1,0 +1,82 @@
+.markdown-editor__dual {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.markdown-editor__dual-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-inline-end: 1px solid hsl(var(--surface-border));
+}
+.markdown-editor__dual-pane[hidden] {
+  display: none;
+}
+.markdown-editor__pane-label {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--interface-text));
+  border-bottom: 1px solid hsl(var(--surface-border));
+}
+.markdown-editor__visual-scroll {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.markdown-editor__raw-scroll {
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+.visual-editor__notice {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.visual-editor {
+  min-height: 100%;
+}
+.visual-editor .milkdown {
+  --crepe-color-background: hsl(var(--surface));
+  --crepe-color-on-background: hsl(var(--interface-text));
+  --crepe-color-surface: hsl(var(--surface-alt));
+  --crepe-color-surface-low: hsl(var(--surface-alt));
+  --crepe-color-on-surface: hsl(var(--interface-text));
+  --crepe-color-on-surface-variant: hsl(var(--muted-foreground));
+  --crepe-color-outline: hsl(var(--surface-border));
+  --crepe-color-primary: hsl(var(--brand));
+  --crepe-color-inline-code: hsl(var(--interface-text));
+  --crepe-color-hover: hsl(var(--accent));
+  --crepe-color-selected: hsl(var(--accent));
+  --crepe-font-default: inherit;
+  --crepe-font-title: inherit;
+}
+.visual-editor .milkdown .ProseMirror {
+  padding: 24px 36px;
+  min-height: 350px;
+}
+.visual-editor .milkdown-source-block {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.6 monospace;
+  padding: 12px;
+  border: 1px dashed hsl(var(--surface-border));
+  border-radius: 4px;
+  background: hsl(var(--surface-alt));
+}
+@media (max-width: 767px) {
+  .markdown-editor__dual {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .visual-editor .milkdown .ProseMirror {
+    padding: 20px 28px;
+  }
+}
+
+.markdown-editor__visual-scroll {
+  background: hsl(var(--surface));
+}

@@ -1,3 +1,4 @@
+import i18n from '@/lib/i18n'
 import { TooltipWrapper } from '@/components/TooltipWrapper'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,14 +19,11 @@ import {
   ClipboardType,
   Code,
   Code2,
-  Columns2,
-  Eye,
   Highlighter,
   Image,
   Italic,
   Link,
   MoreHorizontal,
-  Rows2,
   Redo,
   Strikethrough,
   Table,
@@ -33,7 +31,7 @@ import {
   WrapText,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslation } from '../../../node_modules/react-i18next'
+import { useTranslation } from 'react-i18next'
 import { useEditorStore } from '@/stores/editor'
 import { useUserSettingsStore } from '@/stores/userSettings'
 import { MarkdownEditorRef } from './MarkdownEditor'
@@ -42,22 +40,14 @@ type Props = {
   editorRef: React.RefObject<MarkdownEditorRef>
   onAssetVersionChange?: (version: number) => void
   pageId: string
-  previewVisible: boolean
-  previewStacked: boolean
-  onTogglePreview: () => void
-  onTogglePreviewLayout: () => void
 }
 
 export default function MarkdownToolbar({
   editorRef,
   onAssetVersionChange,
   pageId,
-  previewVisible,
-  previewStacked,
-  onTogglePreview,
-  onTogglePreviewLayout,
 }: Props) {
-  const { t } = useTranslation('editor')
+  const { t } = useTranslation('editor', { i18n })
   const openDialog = useDialogsStore((state) => state.openDialog)
   const lineWrap = useEditorStore((s) => s.lineWrap)
   const toggleLineWrap = useEditorStore((s) => s.toggleLineWrap)
@@ -178,13 +168,7 @@ export default function MarkdownToolbar({
             size="icon"
             className="markdown-toolbar__button"
             onClick={() => {
-              const view = editorRef.current?.editorViewRef.current
-              const selectedText = view
-                ? view.state.doc.sliceString(
-                    view.state.selection.main.from,
-                    view.state.selection.main.to,
-                  )
-                : ''
+              const selectedText = editorRef.current?.getSelectedText?.() ?? ''
               openDialog(DIALOG_LINK_INSERT, { editorRef, selectedText })
             }}
           >
@@ -544,61 +528,6 @@ export default function MarkdownToolbar({
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
-        )}
-        {!isMobile && (
-          <>
-            <div className="markdown-toolbar__separator" />
-            <TooltipWrapper
-              label={t(
-                previewStacked
-                  ? 'toolbar.previewSplitTooltip'
-                  : 'toolbar.previewStackedTooltip',
-              )}
-              side="top"
-              align="center"
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onTogglePreviewLayout}
-                className={cn(
-                  'markdown-toolbar__button markdown-toolbar__button--desktop-only',
-                  {
-                    'markdown-toolbar__button--active': previewStacked,
-                  },
-                )}
-              >
-                {previewStacked ? (
-                  <Columns2 className="markdown-toolbar__icon" />
-                ) : (
-                  <Rows2 className="markdown-toolbar__icon" />
-                )}
-              </Button>
-            </TooltipWrapper>
-            <TooltipWrapper
-              label={t(
-                previewVisible
-                  ? 'toolbar.hidePreviewTooltip'
-                  : 'toolbar.showPreviewTooltip',
-              )}
-              side="top"
-              align="center"
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onTogglePreview}
-                className={cn(
-                  'markdown-toolbar__button markdown-toolbar__button--desktop-only',
-                  {
-                    'markdown-toolbar__button--active': previewVisible,
-                  },
-                )}
-              >
-                <Eye className="markdown-toolbar__icon" />
-              </Button>
-            </TooltipWrapper>
-          </>
         )}
       </div>
     </>

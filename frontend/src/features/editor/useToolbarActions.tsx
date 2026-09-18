@@ -126,7 +126,10 @@ export function useToolbarActions({
 
       const activeElement = document.activeElement
       if (activeElement instanceof Element) {
-        if (isHotkeyAllowedOnElement(activeElement, 'Escape')) {
+        if (
+          activeElement.closest('.visual-editor .ProseMirror') ||
+          isHotkeyAllowedOnElement(activeElement, 'Escape')
+        ) {
           return true
         }
       }

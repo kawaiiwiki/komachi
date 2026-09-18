@@ -1,277 +1,109 @@
 import { act, fireEvent, render } from '@testing-library/react'
-import { useEffect, useRef } from 'react'
+import { createRef, useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import MarkdownEditor from './MarkdownEditor'
+import MarkdownEditor, { type MarkdownEditorRef } from './MarkdownEditor'
 
-// Track each time MarkdownCodeEditor mounts and what initialValue it received.
-// We use useEffect([]) so this only fires on mount, not on re-renders.
-const mountSpy = vi.fn()
-let capturedOnChange: ((val: string) => void) | null = null
-let mockEditorState = {
-  previewVisible: false,
-  previewStacked: false,
-}
-
+const rawMount = vi.fn()
+const visualMount = vi.fn()
+let rawChange: (value: string) => void
+let visualChange: (value: string) => void
+let isMobile = false
+vi.mock('@/lib/useIsMobile', () => ({ useIsMobile: () => isMobile }))
 vi.mock('./MarkdownCodeEditor', () => ({
-  default: function MockMarkdownCodeEditor({
+  default: function MockRaw({
     initialValue,
     onChange,
   }: {
     initialValue: string
-    resetKey: string
-    onChange: (v: string) => void
-    onCursorLineChange?: (line: number) => void
-    editorViewRef: React.RefObject<unknown>
-    lineWrap?: boolean
+    onChange: typeof rawChange
   }) {
-    const initialValueAtMount = useRef(initialValue)
+    rawChange = onChange
     useEffect(() => {
-      mountSpy(initialValueAtMount.current)
+      rawMount()
     }, [])
-
-    capturedOnChange = onChange
-    return <div data-testid="code-editor" data-initial-value={initialValue} />
+    return <div data-testid="raw" data-value={initialValue} />
   },
 }))
-
-vi.mock('../preview/MarkdownPreview', () => ({
-  default: () => <div data-testid="preview" />,
+vi.mock('./VisualMarkdownEditor', () => ({
+  default: function MockVisual({
+    markdown,
+    onChange,
+  }: {
+    markdown: string
+    onChange: typeof visualChange
+  }) {
+    visualChange = onChange
+    useEffect(() => {
+      visualMount()
+    }, [])
+    return <div data-testid="visual" data-value={markdown} />
+  },
 }))
+vi.mock('./MarkdownToolbar', () => ({ default: () => <div /> }))
 
-vi.mock('./MarkdownToolbar', () => ({
-  default: () => <div data-testid="toolbar" />,
-}))
-
-let mockIsMobile = false
-vi.mock('@/lib/useIsMobile', () => ({
-  useIsMobile: () => mockIsMobile,
-}))
-
-vi.mock('@/stores/config', () => ({
-  useConfigStore: () => 5 * 1024 * 1024,
-}))
-
-vi.mock('@/stores/editor', () => ({
-  useEditorStore: () => ({
-    previewVisible: mockEditorState.previewVisible,
-    togglePreview: vi.fn(),
-    previewStacked: mockEditorState.previewStacked,
-    togglePreviewLayout: vi.fn(),
-    lineWrap: true,
-  }),
-}))
-
-vi.mock('./pageEditorStore', () => ({
-  usePageEditorStore: () => null,
-}))
-
-vi.mock('sonner', () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
-}))
-
-vi.mock('@/lib/api/assets', () => ({
-  uploadAsset: vi.fn(),
-}))
-
-vi.mock('@/lib/api/errors', () => ({
-  mapApiError: vi.fn(() => ({ message: 'error' })),
-}))
-
-vi.mock('@codemirror/commands', () => ({
-  historyField: {},
-  redo: vi.fn(() => false),
-  undo: vi.fn(() => false),
-  indentLess: vi.fn(() => true),
-  insertTab: vi.fn(() => true),
-}))
-
-vi.mock('@codemirror/language', () => ({
-  indentUnit: { of: () => ({}) },
-}))
-
-vi.mock('@codemirror/view', () => ({
-  EditorView: class {},
-}))
-
-vi.mock('@/lib/config', () => ({
-  formatBytes: (n: number) => `${n}B`,
-  IMAGE_EXTENSIONS: ['png', 'jpg', 'gif', 'webp'],
-}))
-
-vi.mock('../preview/rehypeLineNumber', () => ({
-  slugifyHeadline: (s: string) => s,
-}))
-
-describe('MarkdownEditor – breakpoint remount preserves content', () => {
+describe('dual Markdown editor', () => {
   beforeEach(() => {
-    mountSpy.mockClear()
-    capturedOnChange = null
-    window.localStorage.clear()
-    mockIsMobile = false
-    mockEditorState = {
-      ...mockEditorState,
-      previewVisible: false,
-      previewStacked: false,
-    }
+    isMobile = false
+    rawMount.mockClear()
+    visualMount.mockClear()
   })
-
-  it('passes edited content (not original initialValue) to MarkdownCodeEditor on remount', async () => {
+  it('opens both panes without changing the original source', () => {
     const onChange = vi.fn()
-    const { rerender } = render(
+    const { getByTestId } = render(
       <MarkdownEditor
-        initialValue="original content"
-        pageId="page-1"
+        pageId="a"
+        initialValue={'__unchanged__\n'}
         onChange={onChange}
       />,
     )
-
-    // Initial mount — editor receives original content
-    expect(mountSpy).toHaveBeenCalledTimes(1)
-    expect(mountSpy).toHaveBeenCalledWith('original content')
-
-    // User types something
-    act(() => {
-      capturedOnChange?.('edited content')
-    })
-
-    // Switch to mobile — MarkdownCodeEditor remounts in the mobile branch
-    mountSpy.mockClear()
-    mockIsMobile = true
-    rerender(
-      <MarkdownEditor
-        initialValue="original content"
-        pageId="page-1"
-        onChange={onChange}
-      />,
+    expect(getByTestId('visual')).toHaveAttribute(
+      'data-value',
+      '__unchanged__\n',
     )
-
-    // Remounted editor must receive the edited content, not the original
-    expect(mountSpy).toHaveBeenCalledTimes(1)
-    expect(mountSpy).toHaveBeenCalledWith('edited content')
+    expect(getByTestId('raw')).toHaveAttribute('data-value', '__unchanged__\n')
+    expect(onChange).not.toHaveBeenCalled()
   })
-
-  it('does not remount MarkdownCodeEditor when the user types', async () => {
+  it('publishes both edit sources immediately and exposes the latest Markdown to save callers', () => {
+    const ref = createRef<MarkdownEditorRef>()
     const onChange = vi.fn()
-    render(
+    const { getByTestId } = render(
       <MarkdownEditor
-        initialValue="original content"
-        pageId="page-1"
+        ref={ref}
+        pageId="a"
+        initialValue="original"
         onChange={onChange}
       />,
     )
-
-    // Clear after initial mount
-    mountSpy.mockClear()
-
-    // Simulate several keystrokes
     act(() => {
-      capturedOnChange?.('o')
+      visualChange('# 日本語')
     })
+    expect(getByTestId('raw')).toHaveAttribute('data-value', '# 日本語')
+    expect(ref.current?.getMarkdown()).toBe('# 日本語')
     act(() => {
-      capturedOnChange?.('or')
+      rawChange('- [x] タスク')
     })
+    expect(getByTestId('visual')).toHaveAttribute('data-value', '- [x] タスク')
+    expect(ref.current?.getMarkdown()).toBe('- [x] タスク')
+    expect(onChange.mock.calls).toEqual([['# 日本語'], ['- [x] タスク']])
+    expect(rawMount).toHaveBeenCalledTimes(1)
+    expect(visualMount).toHaveBeenCalledTimes(1)
+  })
+  it('keeps both editor instances and edits across mobile tabs and breakpoints', () => {
+    const props = { pageId: 'a', initialValue: 'original', onChange: vi.fn() }
+    const { rerender, getByRole, getByTestId } = render(
+      <MarkdownEditor {...props} />,
+    )
     act(() => {
-      capturedOnChange?.('ori')
+      rawChange('edited')
     })
-
-    // MarkdownCodeEditor must not have remounted
-    expect(mountSpy).not.toHaveBeenCalled()
-  })
-
-  it('renders stacked desktop layout classes when preview is stacked', () => {
-    mockEditorState = {
-      ...mockEditorState,
-      previewVisible: true,
-      previewStacked: true,
-    }
-
-    const { container } = render(
-      <MarkdownEditor
-        initialValue="original content"
-        pageId="page-1"
-        onChange={vi.fn()}
-      />,
-    )
-
-    const layout = container.querySelector('.markdown-editor__stacked-layout')
-    const divider = container.querySelector(
-      '.markdown-editor__divider--stacked',
-    )
-
-    expect(layout).not.toBeNull()
-    expect(divider).not.toBeNull()
-  })
-
-  it('resizes side-by-side desktop panes when dragging the divider', () => {
-    mockEditorState = {
-      ...mockEditorState,
-      previewVisible: true,
-      previewStacked: false,
-    }
-
-    const { getByTestId, container } = render(
-      <MarkdownEditor
-        initialValue="original content"
-        pageId="page-1"
-        onChange={vi.fn()}
-      />,
-    )
-
-    const divider = getByTestId('editor-preview-resize-handle')
-    const layout = divider.parentElement as HTMLDivElement
-    layout.getBoundingClientRect = vi.fn(
-      () =>
-        ({
-          width: 1000,
-        }) as DOMRect,
-    )
-
-    fireEvent.mouseDown(divider, { clientX: 500 })
-    fireEvent.mouseMove(document, { clientX: 600 })
-    fireEvent.mouseUp(document)
-
-    const editorPane = container.querySelector(
-      '.markdown-editor__editor-pane--half',
-    ) as HTMLDivElement
-
-    expect(editorPane.style.flex).toBe('0 0 60%')
-    expect(divider).toHaveAttribute('aria-valuenow', '60')
-  })
-
-  it('resizes stacked desktop panes when dragging the divider vertically', () => {
-    mockEditorState = {
-      ...mockEditorState,
-      previewVisible: true,
-      previewStacked: true,
-    }
-
-    const { getByTestId, container } = render(
-      <MarkdownEditor
-        initialValue="original content"
-        pageId="page-1"
-        onChange={vi.fn()}
-      />,
-    )
-
-    const divider = getByTestId('editor-preview-resize-handle')
-    const layout = divider.parentElement as HTMLDivElement
-    layout.getBoundingClientRect = vi.fn(
-      () =>
-        ({
-          height: 1000,
-        }) as DOMRect,
-    )
-
-    fireEvent.mouseDown(divider, { clientY: 500 })
-    fireEvent.mouseMove(document, { clientY: 600 })
-    fireEvent.mouseUp(document)
-
-    const editorPane = container.querySelector(
-      '.markdown-editor__editor-pane--stacked',
-    ) as HTMLDivElement
-
-    expect(editorPane.style.flex).toBe('0 0 60%')
-    expect(divider).toHaveAttribute('aria-valuenow', '60')
-    expect(divider).toHaveAttribute('aria-orientation', 'horizontal')
+    isMobile = true
+    rerender(<MarkdownEditor {...props} />)
+    fireEvent.click(getByRole('tab', { name: 'Raw Markdown' }))
+    expect(getByTestId('raw')).toBeVisible()
+    fireEvent.click(getByRole('tab', { name: 'Visual editor' }))
+    expect(getByTestId('visual')).toBeVisible()
+    expect(getByTestId('visual')).toHaveAttribute('data-value', 'edited')
+    expect(rawMount).toHaveBeenCalledTimes(1)
+    expect(visualMount).toHaveBeenCalledTimes(1)
   })
 })

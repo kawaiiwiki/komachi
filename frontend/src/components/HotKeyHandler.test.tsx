@@ -110,6 +110,32 @@ describe('HotKeyHandler', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  it('leaves Escape and shortcut keys to Japanese IME during composition', () => {
+    const action = vi.fn()
+    useHotKeysStore
+      .getState()
+      .registerHotkey({
+        keyCombo: 'Escape',
+        enabled: true,
+        mode: ['view'],
+        action,
+      })
+    render(
+      <MemoryRouter initialEntries={['/docs/getting-started']}>
+        <HotKeyHandler />
+      </MemoryRouter>,
+    )
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    window.dispatchEvent(event)
+    expect(action).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
   it('switches to the Explorer panel on Ctrl+Shift+E while the search field is focused', async () => {
     renderApp()
 

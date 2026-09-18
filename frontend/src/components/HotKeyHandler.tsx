@@ -22,6 +22,9 @@ export function HotKeyHandler() {
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      // IME owns Enter/Escape and modifier keys until the composition commits.
+      if (e.isComposing || e.keyCode === 229) return
+
       // Skip events already handled by CodeMirror (e.g. search panel closing),
       // but not in dialog mode: BaseDialog deliberately calls e.preventDefault()
       // in onEscapeKeyDown to prevent Radix from self-closing the dialog, while

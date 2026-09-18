@@ -107,7 +107,9 @@
     "resizeAriaLabel": "Resize editor and preview panes",
     "fileTooLarge": "File too large. Max {{maxSize}} allowed.",
     "uploadedToast": "Uploaded {{filename}}",
-    "uploadErrorFallback": "Failed to upload {{filename}}"
+    "uploadErrorFallback": "Failed to upload {{filename}}",
+    "protectedSyntax": "Dashed source blocks preserve extended syntax. Edit these blocks in Raw Markdown.",
+    "visualError": "Visual editor could not load this content. Your Markdown is preserved; continue in Raw Markdown."
   },
   "autoSave": {
     "savedToast": "Saved",

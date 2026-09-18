@@ -15,7 +15,8 @@ vi.mock('@/lib/useIsMobile', () => ({
 }))
 
 vi.mock('react-i18next', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../node_modules/react-i18next')>()
+  const actual =
+    await importOriginal<typeof import('../../../node_modules/react-i18next')>()
   return {
     ...actual,
     useTranslation: () => ({
@@ -86,16 +87,7 @@ describe('MarkdownToolbar paste controls', () => {
   })
 
   it('shows paste buttons directly on desktop', () => {
-    render(
-      <MarkdownToolbar
-        editorRef={editorRef}
-        pageId="page-1"
-        previewVisible={false}
-        previewStacked={false}
-        onTogglePreview={vi.fn()}
-        onTogglePreviewLayout={vi.fn()}
-      />,
-    )
+    render(<MarkdownToolbar editorRef={editorRef} pageId="page-1" />)
 
     expect(screen.getByTestId('paste-rich-button')).toBeInTheDocument()
     expect(screen.getByTestId('paste-plain-button')).toBeInTheDocument()
@@ -104,16 +96,7 @@ describe('MarkdownToolbar paste controls', () => {
   it('keeps paste actions only inside the mobile dropdown', async () => {
     mockIsMobile = true
 
-    render(
-      <MarkdownToolbar
-        editorRef={editorRef}
-        pageId="page-1"
-        previewVisible={false}
-        previewStacked={false}
-        onTogglePreview={vi.fn()}
-        onTogglePreviewLayout={vi.fn()}
-      />,
-    )
+    render(<MarkdownToolbar editorRef={editorRef} pageId="page-1" />)
 
     expect(screen.queryByTestId('paste-rich-button')).not.toBeInTheDocument()
     expect(screen.queryByTestId('paste-plain-button')).not.toBeInTheDocument()
@@ -151,16 +134,7 @@ describe('MarkdownToolbar highlight control', () => {
   })
 
   it('wraps the selection with == on desktop button click', () => {
-    render(
-      <MarkdownToolbar
-        editorRef={editorRef}
-        pageId="page-1"
-        previewVisible={false}
-        previewStacked={false}
-        onTogglePreview={vi.fn()}
-        onTogglePreviewLayout={vi.fn()}
-      />,
-    )
+    render(<MarkdownToolbar editorRef={editorRef} pageId="page-1" />)
 
     fireEvent.click(screen.getByTestId('format-highlight-button'))
 
@@ -170,16 +144,7 @@ describe('MarkdownToolbar highlight control', () => {
   it('wraps the selection with == from the mobile dropdown', async () => {
     mockIsMobile = true
 
-    render(
-      <MarkdownToolbar
-        editorRef={editorRef}
-        pageId="page-1"
-        previewVisible={false}
-        previewStacked={false}
-        onTogglePreview={vi.fn()}
-        onTogglePreviewLayout={vi.fn()}
-      />,
-    )
+    render(<MarkdownToolbar editorRef={editorRef} pageId="page-1" />)
 
     expect(
       screen.queryByTestId('format-highlight-button'),
