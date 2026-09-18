@@ -22,7 +22,10 @@ import (
 	"github.com/kawaiiwiki/komachi/backend/internal/restore"
 )
 
-//go:embed dist/**
+// Include underscore-prefixed Vite chunks (e.g. _baseMerge-*.js), which
+// recursive embedding otherwise excludes.
+//
+//go:embed all:dist/**
 var frontend embed.FS
 
 // EmbedFrontend is a flag to enable or disable embedding the frontend.
